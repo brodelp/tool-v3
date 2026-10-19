@@ -51,4 +51,5 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN groupadd --system app && useradd --system --gid app --no-create-home app
 USER app
 EXPOSE 8000
-CMD ["uvicorn", "scat_validator.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# No uvicorn access log: it would record query values. The app logs route/status/duration/counts.
+CMD ["uvicorn", "scat_validator.api:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

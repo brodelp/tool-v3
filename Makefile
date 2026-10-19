@@ -19,8 +19,10 @@ test:
 
 check: lint typecheck test
 
+# --no-access-log: uvicorn's access log would record query values; the app logs route,
+# status, duration, and counts instead.
 run:
-	uv run --locked uvicorn scat_validator.api:app --host 0.0.0.0 --port 8000 --reload
+	uv run --locked uvicorn scat_validator.api:app --host 0.0.0.0 --port 8000 --reload --no-access-log
 
 lock:
 	uv lock
