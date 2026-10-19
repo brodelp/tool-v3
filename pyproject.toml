@@ -40,3 +40,7 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+filterwarnings = [
+    # Starlette deprecates httpx for its TestClient; only the original health test uses it.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:UserWarning",
+]

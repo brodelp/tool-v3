@@ -1,0 +1,31 @@
+{
+  "project_id": 101,
+  "case_id": 5001,
+  "username": "demo_annotator",
+  "narrative": "Aspirin caused nausea.",
+  "offset_unit": "unicode-code-point",
+  "annotations": {
+    "SDrug": [
+      {"text": "Aspirin", "start": 0, "end": 7, "external_id": "ann-001"}
+    ],
+    "AE": [
+      {"text": "nausea", "start": 15, "end": 21}
+    ]
+  },
+  "source_metadata": {
+    "source_record_id": "external-5001",
+    "reviewed": false,
+    "tags": ["fictional", "validation-demo"],
+    "optional_value": null
+  },
+  "numeric_metadata": {
+    "fraction": 0.1,
+    "precision": 0.100000000000000005,
+    "decimal_integer": 1.0,
+    "exponent_integer": 1e0,
+    "tiny": 1e-400,
+    "signed_zero": -0,
+    "scale": 1.2300,
+    "numeric_string": "9007199254740993"
+  }
+}
