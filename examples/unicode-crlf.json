@@ -1,0 +1,15 @@
+{
+  "project_id": 101,
+  "case_id": 5003,
+  "username": "reviewer-2",
+  "narrative": "A😀é\r\nB",
+  "offset_unit": "unicode-code-point",
+  "annotations": {
+    "Status": [
+      {"text": "😀", "start": 1, "end": 2},
+      {"text": "é", "start": 2, "end": 4},
+      {"text": "\r\n", "start": 4, "end": 6},
+      {"text": "B", "start": 6, "end": 7}
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "project_id": 101,
+  "case_id": 5004,
+  "username": "brandon.penny",
+  "narrative": "Ibuprofen; rash.",
+  "offset_unit": "unicode-code-point",
+  "annotations": {
+    "SDrug": [
+      {"text": "Ibuprofen", "start": 0, "end": 9, "id": "a1", "label": "AE", "color": "#ff0000", "extras": {"nested": [1, [2, {}], []]}}
+    ],
+    "AE": [
+      {"text": "rash", "start": 11, "end": 15, "__proto__": {"polluted": true}, "_scatSource": "external"}
+    ]
+  },
+  "id": 7,
+  "label": "case",
+  "echo": false,
+  "extras": {},
+  "__proto__": {"x": null},
+  "_scatSource": {"provenance": "claimed"},
+  "offsetUnit": "utf-16",
+  "model_config": {"extra": "forbid"},
+  "__dict__": [],
+  "nested": {"a": {"b": {"c": [true, false, null, "", 0, -1, 2.5e-3]}}, "empty_object": {}, "empty_array": []}
+}

@@ -1,0 +1,400 @@
+{
+  "records": [
+    {
+      "project_id": 101,
+      "case_id": 7000,
+      "username": " demo",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7001,
+      "username": "demo ",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7002,
+      "username": "de mo",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7003,
+      "username": "demo\n",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7004,
+      "username": "@example.com",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7005,
+      "username": "Demo <demo@example.com>",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7006,
+      "username": "demo😀",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7007,
+      "username": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7008,
+      "username": "",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7009,
+      "username": "   ",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7010,
+      "username": "demo​",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    },
+    {
+      "project_id": 101,
+      "case_id": 7011,
+      "username": "d@e@example.com",
+      "narrative": "Aspirin caused nausea.",
+      "offset_unit": "unicode-code-point",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7,
+            "external_id": "ann-001"
+          }
+        ],
+        "AE": [
+          {
+            "text": "nausea",
+            "start": 15,
+            "end": 21
+          }
+        ]
+      },
+      "source_metadata": {
+        "source_record_id": "external-5001",
+        "reviewed": false,
+        "tags": [
+          "fictional",
+          "validation-demo"
+        ],
+        "optional_value": null
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "project_id": 101,
+  "case_id": 5001,
+  "username": "demo_annotator",
+  "narrative": "Aspirin caused nausea.",
+  "offset_unit": "unicode-code-point",
+  "annotations": {}
+}
