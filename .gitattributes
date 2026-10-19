@@ -1,0 +1,7 @@
+# Normalize to LF everywhere so files work inside the Linux container
+# regardless of the Windows host's core.autocrlf setting.
+* text=auto eol=lf
+
+# Raw byte fixtures (BOMs, CRLF, malformed UTF-8, exact numeric tokens)
+# must never be rewritten by git.
+tests/fixtures/raw/** binary

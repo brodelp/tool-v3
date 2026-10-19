@@ -1,0 +1,25 @@
+name: scat-v3
+
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    image: scat-validator:local
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Host exposure is loopback-only by design (spec §5, §10).
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status == 200 else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

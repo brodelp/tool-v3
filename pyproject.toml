@@ -1,0 +1,42 @@
+[project]
+name = "scat-validator"
+version = "0.1.0"
+description = "SCAT stage 1: validation and inspection API for fictional case data."
+readme = "README.md"
+requires-python = "==3.14.*"
+dependencies = [
+    "fastapi==0.148.0",
+    "uvicorn==0.54.0",
+    "pydantic==2.14.1",
+    "email-validator==2.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff==0.17.1",
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

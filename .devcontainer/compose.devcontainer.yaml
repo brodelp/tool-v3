@@ -1,0 +1,19 @@
+# Dev container override for ../compose.yaml.
+# Relative paths resolve against the first compose file's directory (the project root).
+# A separate project name keeps the dev container from replacing the `docker compose up` service.
+name: scat-v3-devcontainer
+
+services:
+  api:
+    build:
+      context: .
+      target: dev
+    image: scat-validator:devcontainer
+    read_only: false
+    command: ["sleep", "infinity"]
+    volumes:
+      - .:/app:cached
+    # VS Code forwards 8000 instead, so the dev container can coexist with `docker compose up`.
+    ports: !reset []
+    healthcheck:
+      disable: true

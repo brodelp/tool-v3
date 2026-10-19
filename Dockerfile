@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+
+# Pinned runtimes. Keep PYTHON_IMAGE consistent with requires-python in pyproject.toml.
+ARG PYTHON_IMAGE=python:3.14.8-slim-trixie
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.1
+
+FROM ${UV_IMAGE} AS uv
+
+# ---------------------------------------------------------------- base
+FROM ${PYTHON_IMAGE} AS base
+COPY --from=uv /uv /uvx /usr/local/bin/
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:${PATH}"
+WORKDIR /app
+
+# ---------------------------------------------------------------- dev
+# Dev container target: tooling + non-root user; source is bind-mounted at /app.
+FROM base AS dev
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git make curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ARG USERNAME=vscode
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN groupadd --gid "${USER_GID}" "${USERNAME}" \
+    && useradd --uid "${USER_UID}" --gid "${USER_GID}" --create-home --shell /bin/bash "${USERNAME}" \
+    && mkdir -p /opt/venv \
+    && chown "${USERNAME}:${USERNAME}" /opt/venv /app
+USER ${USERNAME}
+# Pre-install locked dependencies (incl. dev group) so the container opens ready;
+# postCreateCommand then installs the project itself in editable mode.
+COPY --chown=${USERNAME}:${USERNAME} pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/home/vscode/.cache/uv,uid=1000,gid=1000 \
+    uv sync --locked --no-install-project
+
+# ---------------------------------------------------------------- runtime
+# Compose target: production dependencies only, non-root, no source mount.
+FROM base AS runtime
+ENV UV_COMPILE_BYTECODE=1
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-install-project
+COPY README.md ./
+COPY src ./src
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-editable
+RUN groupadd --system app && useradd --system --gid app --no-create-home app
+USER app
+EXPOSE 8000
+CMD ["uvicorn", "scat_validator.api:app", "--host", "0.0.0.0", "--port", "8000"]
