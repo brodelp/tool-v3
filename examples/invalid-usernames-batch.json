@@ -1,8 +1,7 @@
 {
   "records": [
     {
-      "project_id": 101,
-      "case_id": 7000,
+      "case_id": "7000-1",
       "username": " demo",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -34,8 +33,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7001,
+      "case_id": "7001-1",
       "username": "demo ",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -67,8 +65,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7002,
+      "case_id": "7002-1",
       "username": "de mo",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -100,8 +97,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7003,
+      "case_id": "7003-1",
       "username": "demo\n",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -133,8 +129,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7004,
+      "case_id": "7004-1",
       "username": "@example.com",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -166,8 +161,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7005,
+      "case_id": "7005-1",
       "username": "Demo <demo@example.com>",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -199,8 +193,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7006,
+      "case_id": "7006-1",
       "username": "demo😀",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -232,8 +225,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7007,
+      "case_id": "7007-1",
       "username": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -265,8 +257,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7008,
+      "case_id": "7008-1",
       "username": "",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -298,8 +289,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7009,
+      "case_id": "7009-1",
       "username": "   ",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -331,8 +321,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7010,
+      "case_id": "7010-1",
       "username": "demo​",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",
@@ -364,8 +353,7 @@
       }
     },
     {
-      "project_id": 101,
-      "case_id": 7011,
+      "case_id": "7011-1",
       "username": "d@e@example.com",
       "narrative": "Aspirin caused nausea.",
       "offset_unit": "unicode-code-point",

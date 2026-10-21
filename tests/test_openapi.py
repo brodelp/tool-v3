@@ -8,12 +8,17 @@ from pydantic import ValidationError
 
 from scat_validator.config import LABELS, MAX_SAFE_NUMBER
 from scat_validator.contracts import (
+    CASE_ID_PATTERN,
     REQUEST_FAILURE_ADAPTER,
     VALIDATION_REPORT_ADAPTER,
     BatchEnvelope,
     Record,
 )
-from scat_validator.openapi_docs import EXAMPLE_INVALID_BATCH, EXAMPLE_RECORD
+from scat_validator.openapi_docs import (
+    EXAMPLE_ANNOTATED_RECORD,
+    EXAMPLE_INVALID_BATCH,
+    EXAMPLE_RECORD,
+)
 from tests.helpers import call, dumps, example_bytes, post_batch, post_single
 
 POST_PATHS = ("/api/v1/validate", "/api/v1/validate-batch")
@@ -110,23 +115,14 @@ def test_echo_parameter(spec: dict[str, Any]) -> None:
 def test_record_schema(spec: dict[str, Any]) -> None:
     record = schemas(spec)["Record"]
     assert record["additionalProperties"] is True
-    assert record["required"] == [
-        "project_id",
-        "case_id",
-        "username",
-        "narrative",
-        "offset_unit",
-        "annotations",
-    ]
-    for field in ("project_id", "case_id"):
-        prop = record["properties"][field]
-        assert (prop["type"], prop["format"], prop["minimum"], prop["maximum"]) == (
-            "integer",
-            "int32",
-            1,
-            2147483647,
-        )
-        assert "decimal point or exponent" in prop["description"]
+    assert record["required"] == ["case_id", "username", "narrative"]
+    assert record["properties"]["offset_unit"]["default"] == "unicode-code-point"
+    assert "default" not in record["properties"]["annotations"]
+    assert "project_id" not in record["properties"]
+    case_id = record["properties"]["case_id"]
+    assert (case_id["type"], case_id["minLength"], case_id["maxLength"]) == ("string", 1, 64)
+    assert case_id["pattern"] == CASE_ID_PATTERN
+    assert case_id["examples"] == ["12345678-1"]
     username = record["properties"]["username"]
     assert username["maxLength"] == 255
     assert "format" not in username
@@ -187,7 +183,8 @@ def test_response_variants(spec: dict[str, Any]) -> None:
     assert status_enum == ["passed", "failed", "skipped"]
     observation = schemas(spec)["RecordObservation"]
     assert len(observation["required"]) == 11
-    for nullable in ("project_id", "case_id", "username", "annotation_count"):
+    assert "project_id" not in observation["properties"]
+    for nullable in ("case_id", "username", "offset_unit", "annotation_count"):
         types = [branch.get("type") for branch in observation["properties"][nullable]["anyOf"]]
         assert "null" in types
     issue = schemas(spec)["Issue"]
@@ -214,9 +211,11 @@ def examples_for(operation: dict[str, Any], status: str) -> dict[str, Any]:
 
 def test_examples_match_runtime(spec: dict[str, Any]) -> None:
     single = spec["paths"]["/api/v1/validate"]["post"]
-    request = single["requestBody"]["content"]["application/json"]["examples"]["valid_record"]
-    response = post_single(dumps(request["value"]))
-    assert response.json() == examples_for(single, "200")["valid_record"]["value"]
+    requests = single["requestBody"]["content"]["application/json"]["examples"]
+    for name in ("minimal_record", "annotated_record"):
+        response = post_single(dumps(requests[name]["value"]))
+        assert response.json() == examples_for(single, "200")[name]["value"]
+    request = requests["minimal_record"]
     invalid = post_single(dumps(request["value"]), query="echo=maybe")
     assert invalid.json() == examples_for(single, "422")["invalid_echo_option"]["value"]
     bad_json = post_single(b"{")
@@ -231,13 +230,44 @@ def test_examples_match_runtime(spec: dict[str, Any]) -> None:
 
 def test_documentation_examples_are_the_reference_fixtures() -> None:
     assert json.loads(example_bytes("valid-record.json")) == EXAMPLE_RECORD
+    assert json.loads(example_bytes("annotated-record.json")) == EXAMPLE_ANNOTATED_RECORD
     assert json.loads(example_bytes("invalid-batch.json")) == EXAMPLE_INVALID_BATCH
+
+
+def _records_in(example: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = example.get("records", [example])
+    return records
+
+
+def test_documented_request_examples_are_minimal(spec: dict[str, Any]) -> None:
+    single = spec["paths"]["/api/v1/validate"]["post"]
+    single_examples = single["requestBody"]["content"]["application/json"]["examples"]
+    assert list(single_examples) == ["minimal_record", "annotated_record"]
+    assert single_examples["minimal_record"]["value"] == {
+        "case_id": "12345678-1",
+        "username": "demo_annotator",
+        "narrative": "Aspirin caused nausea.",
+    }
+    batch = spec["paths"]["/api/v1/validate-batch"]["post"]
+    batch_examples = batch["requestBody"]["content"]["application/json"]["examples"]
+    # No foreign fields anywhere: records hold only owned fields, annotations only text/start/end.
+    for example in [*single_examples.values(), *batch_examples.values()]:
+        for record in _records_in(example["value"]):
+            assert set(record) <= {"case_id", "username", "narrative", "annotations"}
+            for items in record.get("annotations", {}).values():
+                assert all(set(item) == {"text", "start", "end"} for item in items)
+    for path in POST_PATHS:
+        for status in ("200", "422"):
+            for example in examples_for(spec["paths"][path]["post"], status).values():
+                assert example["value"].get("foreign_field_count", 0) == 0
 
 
 @pytest.mark.parametrize(
     ("fixture", "post", "query"),
     [
         ("valid-record.json", post_single, "echo=true"),
+        ("annotated-record.json", post_single, ""),
+        ("metadata-record.json", post_single, "echo=true"),
         ("nested-reserved-metadata.json", post_single, ""),
         ("invalid-batch.json", post_batch, ""),
         ("valid-batch.json", post_batch, "echo=true"),
@@ -254,7 +284,7 @@ def test_runtime_reports_conform_to_response_schema(fixture: str, post: Any, que
     [
         lambda: post_single(b"{"),
         lambda: post_single(b"{}", headers=[]),
-        lambda: post_single(example_bytes("valid-record.json"), query="echo=no&x=1"),
+        lambda: post_single(example_bytes("metadata-record.json"), query="echo=no&x=1"),
         lambda: post_batch(b"[]"),
     ],
 )
@@ -282,7 +312,7 @@ def test_422_variants_are_mutually_exclusive(spec: dict[str, Any]) -> None:
     assert matching_variants(report.body) == ["ValidationReport"]
     for failure in (
         post_single(b"[]"),
-        post_single(example_bytes("valid-record.json"), query="x=1"),
+        post_single(example_bytes("metadata-record.json"), query="x=1"),
     ):
         assert failure.status == 422
         assert matching_variants(failure.body) == ["RequestFailure"]
@@ -295,12 +325,16 @@ def test_422_variants_are_mutually_exclusive(spec: dict[str, Any]) -> None:
 
 def test_request_models_agree_with_runtime_on_reference_fixtures() -> None:
     Record.model_validate_json(example_bytes("valid-record.json"))
+    Record.model_validate_json(example_bytes("annotated-record.json"))
+    Record.model_validate_json(example_bytes("metadata-record.json"))
     Record.model_validate_json(example_bytes("nested-reserved-metadata.json"))
     BatchEnvelope.model_validate_json(example_bytes("valid-batch.json"))
     with pytest.raises(ValidationError):
         Record.model_validate_json(dumps({**EXAMPLE_RECORD, "annotations": {"ae": []}}))
     with pytest.raises(ValidationError):
-        Record.model_validate_json(dumps({**EXAMPLE_RECORD, "project_id": 0}))
+        Record.model_validate_json(dumps({**EXAMPLE_RECORD, "case_id": 5001}))
+    with pytest.raises(ValidationError):
+        Record.model_validate_json(dumps({**EXAMPLE_RECORD, "case_id": "5001"}))
     with pytest.raises(ValidationError):
         BatchEnvelope.model_validate_json(dumps({"records": [EXAMPLE_RECORD], "extra": 1}))
 

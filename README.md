@@ -3,7 +3,7 @@
 Stage 1 of the Safety Concepts Annotation Tool: a small FastAPI service that validates fictional
 case records, explains what it understood, and, on request, echoes the exact decoded input. The
 implementation contract is [docs/scat-validation-endpoint-spec.md](docs/scat-validation-endpoint-spec.md)
-(revision 0.3).
+(revision 0.4).
 
 A successful response means **valid under that contract**. Nothing is stored, authenticated,
 authorized, looked up in a database, or checked for clinical correctness. There is no frontend and
@@ -18,6 +18,28 @@ no database.
 
 Both POST endpoints accept the optional query `echo=true` (also `1`, `on`, `yes`, `t`, `y`, any case;
 false spellings `false`, `0`, `off`, `no`, `f`, `n`). No other query parameter is accepted.
+
+### Minimal submission
+
+A record needs only three fields. A narrative without annotations is the default submission:
+
+```json
+{
+  "case_id": "12345678-1",
+  "username": "demo_annotator",
+  "narrative": "Aspirin caused nausea."
+}
+```
+
+- `case_id` is a string `<case number>-<version>` (ASCII, at most 64 characters), unique within a
+  batch and kept exactly as sent. Numbers such as `5001` are rejected, not converted.
+- `annotations` is optional: an object mapping label names to `{text, start, end}` spans (see
+  `examples/annotated-record.json`). Absent means zero annotations.
+- `offset_unit` is optional. Offsets are always Unicode code points. If you send `offset_unit`,
+  it must be `unicode-code-point`. Each record observation in the report includes the
+  `offset_unit` the service used; the echo is never changed.
+- Any other property (including a legacy `project_id`) is preserved as foreign metadata and listed
+  under `foreign_fields`.
 
 ## Runtime and tooling
 
@@ -85,7 +107,7 @@ relative. In Windows PowerShell type `curl.exe`, not `curl`, which is an alias f
 the fixture bytes unchanged, with no shell interpolation of JSON.
 
 ```bash
-# 1. Valid record -> HTTP 200 and a validation report
+# 1. Minimal record -> HTTP 200 and a validation report
 curl --include --header 'Content-Type: application/json' --data-binary '@examples/valid-record.json' http://localhost:8000/api/v1/validate
 
 # 2. Same record with echo -> HTTP 200; the report also contains "echo" with the exact input
@@ -100,9 +122,10 @@ The PowerShell form is the same with `curl.exe` and double quotes:
 
 To diagnose a failure, read `error.code`, then each entry of `issues` (`path` is a JSON Pointer
 into your body, and `code` is a stable rule identifier), and the per-record `checks`. Correct the
-input and resend it. `examples/` holds more fixtures: exact numeric metadata, Unicode/CRLF
-offsets, overlapping spans, username boundaries, reserved-looking metadata names, a long
-diagnostic path, and repeated case pairs.
+input and resend it. `examples/` holds more fixtures: a record with pre-existing annotations
+(`annotated-record.json`), foreign metadata (`metadata-record.json`), exact numeric metadata,
+Unicode/CRLF offsets, overlapping spans, username boundaries, reserved-looking metadata names, a
+long diagnostic path, and repeated case identifiers.
 
 Fixture files must be saved as **UTF-8 without a BOM**. The server tolerates one leading BOM,
 but senders should not add one.

@@ -14,8 +14,7 @@ MAX_MESSAGE_BYTES: Final = 256
 MAX_REPORT_BYTES: Final = 1_048_576
 MAX_RESPONSE_BYTES: Final = 8_388_608
 
-MIN_ID: Final = 1
-MAX_ID: Final = 2_147_483_647
+MAX_CASE_ID_CHARS: Final = 64
 MAX_SAFE_NUMBER: Final = 9_007_199_254_740_991
 
 OFFSET_UNIT: Final = "unicode-code-point"
@@ -49,14 +48,15 @@ LABELS: Final[tuple[str, ...]] = (
 )
 LABEL_ORDER: Final[dict[str, int]] = {label: i for i, label in enumerate(LABELS)}
 
+# Owned record fields in diagnostic order (spec §3.1). offset_unit and annotations are optional.
 RECORD_FIELDS: Final = (
-    "project_id",
     "case_id",
     "username",
     "narrative",
     "offset_unit",
     "annotations",
 )
+REQUIRED_RECORD_FIELDS: Final = ("case_id", "username", "narrative")
 ANNOTATION_FIELDS: Final = ("text", "start", "end")
 
 # Per-record checks in reporting order (spec §6.4).

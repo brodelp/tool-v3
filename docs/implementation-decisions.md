@@ -1,7 +1,36 @@
 # Stage 1 implementation decisions
 
-These are choices the specification (revision 0.3) leaves to the implementation. None of them adds
+These are choices the specification (revision 0.4) leaves to the implementation. None of them adds
 an input restriction or relaxes a "must".
+
+## Revision 0.4 intake
+
+- **Case identifier syntax.** `case_id` matches
+  `^[A-Za-z0-9](?:[A-Za-z0-9._]*[A-Za-z0-9])?-[0-9]+$` and is 1–64 characters. The owner confirmed
+  that the hyphen separates the case number from a version number, so exactly one hyphen is
+  allowed and the version is decimal digits. The case number reuses the conservative ASCII
+  identifier alphabet (letters, digits, `.`, `_`) proposed during review. The 64-character
+  ceiling is this implementation's choice; the owner gave no length. The pattern runs on
+  Pydantic's default Rust regex engine, where `$` means end of text, so `"12345678-1\n"` is
+  rejected (Python's `re` `$` would accept it).
+- **Blank vs malformed `case_id`.** As with usernames, empty/whitespace-only values get
+  `EMPTY_VALUE` and every other syntax/length failure gets one `INVALID_ID`. The issue code
+  `INVALID_ID` is kept for stability even though its meaning changed from range to syntax.
+- **Identity is the exact string.** No case folding or numeric reading of the version, so
+  `5001-1` and `5001-01` are distinct, and versions of one case number may share a batch.
+- **`project_id` is foreign, not rejected.** Rejecting it would add an input restriction, and
+  §4.1 treats unowned properties as opaque. It is inventoried and echoed like any metadata, and it
+  does not take part in uniqueness.
+- **Optional slots.** An absent `offset_unit` or `annotations` neither fails `required_fields`
+  nor blocks `field_types`/`field_values`. An explicit `null` is still `INVALID_TYPE`, because
+  missing and null stay different (§3.1). An absent map is evaluated as an empty label list, so
+  annotation checks pass vacuously and counts are `0`/`{}`.
+- **Offset-unit "export".** The owner asked for the unit to be parsed on our side and included
+  in the export data. In stage 1 the report is the only output, so the unit appears as
+  `RecordObservation.offset_unit`. It is not inserted into the echo: §4.1 forbids defaults in the
+  echoed source, and the owner chose the report option. A supplied value is still matched exactly
+  (no aliases or case folding, §2.1), and a wrong value still skips range/text checks rather than
+  guessing coordinates.
 
 ## Decoding and numbers
 
@@ -36,7 +65,7 @@ an input restriction or relaxes a "must".
   structurally: a non-array value still gets `INVALID_TYPE` at the fallback path. Its annotation
   foreign fields are counted but omitted from the inventory.
 - **Rejected scalars.** The §6.4 skip ("a scalar rejected by json_values skips further scalar
-  type/value checks") applies to slots that expect a scalar: IDs, username, narrative,
+  type/value checks") applies to slots that expect a scalar: case_id, username, narrative,
   offset_unit, text, start, and end. Slots that expect a container (the record, the annotations
   map, a label array, an annotation object) keep their shape check, so `1e400` there gets
   `UNSAFE_NUMBER` and `INVALID_TYPE`. This follows §6.4 ("containing-object shape checks still
@@ -91,8 +120,8 @@ an input restriction or relaxes a "must".
 - Request schemas (`Record`, `Annotation`, `AnnotationMap`, `BatchEnvelope`) are strict Pydantic
   models used for OpenAPI and as an agreement check in tests. Runtime validation never builds them,
   because a whole-model validator cannot give independent partial diagnostics (§9).
-- The ID range and offset unit use shared Pydantic `TypeAdapter`s built from the same annotated
-  types that appear in the schema.
+- The case-identifier syntax and offset unit use shared Pydantic `TypeAdapter`s built from the
+  same annotated types that appear in the schema.
 - `RequestFailure` is closed (`additionalProperties: false`). An invalid `ValidationReport`
   carries every `RequestFailure` field, so this keeps the two 422 variants mutually exclusive
   under `oneOf`.

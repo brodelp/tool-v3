@@ -83,7 +83,7 @@ def test_valid_batch_and_repeated_pair_examples() -> None:
     response = post_batch(example_bytes("valid-batch.json"))
     assert response.status == 200
     assert response.json()["record_count"] == 3
-    repeated = post_batch(example_bytes("repeated-case-pair-batch.json"))
+    repeated = post_batch(example_bytes("repeated-case-id-batch.json"))
     assert repeated.status == 422
     assert issues_of(repeated) == [("/records/1", "DUPLICATE_RECORD")]
 
@@ -218,7 +218,7 @@ def test_nonstandard_constants_are_invalid_json(token: str) -> None:
 )
 def test_extreme_exponents_with_safe_values_round_trip(token: str) -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"n",'
+        b'{"case_id":"1-1","username":"u","narrative":"n",'
         b'"offset_unit":"unicode-code-point","annotations":{},"x":' + token.encode() + b"}"
     )
     response = post_single(raw, query="echo=true")
@@ -228,7 +228,7 @@ def test_extreme_exponents_with_safe_values_round_trip(token: str) -> None:
 
 def test_large_exponent_with_huge_coefficient_is_unsafe_without_500() -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"n",'
+        b'{"case_id":"1-1","username":"u","narrative":"n",'
         b'"offset_unit":"unicode-code-point","annotations":{},"x":-'
         + b"9" * 6000
         + b"."
@@ -247,11 +247,11 @@ def test_one_leading_bom_accepted_and_removed_from_echo() -> None:
     raw = raw_fixture("bom-record.json")
     response = post_single(raw, query="echo=true")
     assert response.status == 200
-    assert echo_bytes(response) == example_bytes("valid-record.json").strip()
+    assert echo_bytes(response) == example_bytes("metadata-record.json").strip()
 
 
 def test_bom_counts_toward_body_limit() -> None:
-    body = b"\xef\xbb\xbf" + example_bytes("valid-record.json")
+    body = b"\xef\xbb\xbf" + example_bytes("metadata-record.json")
     padding = MAX_BODY_BYTES - len(body) + 1
     oversized = body[:-2] + b" " * padding + body[-2:]
     assert len(oversized) == MAX_BODY_BYTES + 1
@@ -279,7 +279,7 @@ def test_decoder_failures_have_no_report(name: str) -> None:
 
 @pytest.mark.parametrize(
     "body",
-    [b"", b" \n", b'{"project_id": 1', b"{}{}", b"{} x", b"\xef\xbb\xbf", b'{"a": 1}\xef\xbb\xbf'],
+    [b"", b" \n", b'{"case_id": "1-1"', b"{}{}", b"{} x", b"\xef\xbb\xbf", b'{"a": 1}\xef\xbb\xbf'],
 )
 def test_empty_malformed_trailing_and_misplaced_bom(body: bytes) -> None:
     assert_request_failure(post_single(body), 400, "INVALID_JSON", 1)
@@ -320,7 +320,7 @@ def test_feff_inside_strings_is_content() -> None:
 )
 def test_supported_media_types(content_type: str) -> None:
     headers = [(b"content-type", content_type.encode())]
-    response = post_single(example_bytes("valid-record.json"), headers=headers)
+    response = post_single(example_bytes("metadata-record.json"), headers=headers)
     assert response.status == 200
 
 
@@ -343,7 +343,7 @@ def test_supported_media_types(content_type: str) -> None:
     ],
 )
 def test_unsupported_media_types(headers: list[tuple[bytes, bytes]]) -> None:
-    response = post_single(example_bytes("valid-record.json"), headers=headers)
+    response = post_single(example_bytes("metadata-record.json"), headers=headers)
     assert_request_failure(response, 415, "UNSUPPORTED_MEDIA_TYPE", 0)
 
 
@@ -353,18 +353,18 @@ def test_unsupported_media_types(headers: list[tuple[bytes, bytes]]) -> None:
 )
 def test_identity_content_encoding_accepted(encoding: bytes) -> None:
     headers = [*JSON_HEADERS, (b"content-encoding", encoding)]
-    assert post_single(example_bytes("valid-record.json"), headers=headers).status == 200
+    assert post_single(example_bytes("metadata-record.json"), headers=headers).status == 200
 
 
 @pytest.mark.parametrize("encoding", [b"gzip", b"br", b"deflate", b"identity, gzip", b"x-gzip"])
 def test_compressed_bodies_rejected(encoding: bytes) -> None:
     headers = [*JSON_HEADERS, (b"content-encoding", encoding)]
-    response = post_single(example_bytes("valid-record.json"), headers=headers)
+    response = post_single(example_bytes("metadata-record.json"), headers=headers)
     assert_request_failure(response, 415, "UNSUPPORTED_CONTENT_ENCODING", 0)
 
 
 def padded_record(total: int) -> bytes:
-    raw = example_bytes("valid-record.json").strip()
+    raw = example_bytes("metadata-record.json").strip()
     padding = total - len(raw)
     assert padding >= 0
     return raw[:-1] + b" " * padding + raw[-1:]
@@ -381,7 +381,7 @@ def test_exact_byte_limit_passes_and_limit_plus_one_fails() -> None:
 
 def test_streamed_body_without_content_length_is_bounded() -> None:
     chunk = b" " * 65536
-    body_prefix = example_bytes("valid-record.json").strip()[:-1]
+    body_prefix = example_bytes("metadata-record.json").strip()[:-1]
     chunks = [body_prefix] + [chunk] * 200 + [b"}"]  # ~13 MB offered
     response = post_single(b"", chunks=chunks)
     assert_request_failure(response, 413, "PAYLOAD_TOO_LARGE", 0)
@@ -391,7 +391,7 @@ def test_streamed_body_without_content_length_is_bounded() -> None:
 
 
 def test_streamed_body_within_limit_is_accepted() -> None:
-    raw = example_bytes("valid-record.json")
+    raw = example_bytes("metadata-record.json")
     chunks = [raw[i : i + 7] for i in range(0, len(raw), 7)]
     response = post_single(b"", chunks=chunks)
     assert response.status == 200
@@ -408,7 +408,7 @@ def test_declared_oversize_rejected_before_reading_body() -> None:
 
 def test_all_post_responses_are_no_store_json() -> None:
     cases = [
-        post_single(example_bytes("valid-record.json")),
+        post_single(example_bytes("metadata-record.json")),
         post_batch(example_bytes("invalid-batch.json")),
         post_single(b"{", query="x=1"),
         post_single(b"{}", headers=[]),
@@ -423,7 +423,7 @@ def test_all_post_responses_are_no_store_json() -> None:
 
 def deep_record(depth: int) -> bytes:
     """A valid record whose deepest container is at ``depth`` (root object is depth 1)."""
-    raw = example_bytes("valid-record.json").strip()
+    raw = example_bytes("metadata-record.json").strip()
     nested = "[" * (depth - 1) + "]" * (depth - 1)
     return raw[:-1] + f', "deep": {nested}}}'.encode()
 
@@ -444,7 +444,7 @@ def test_batch_depth_counts_envelope_and_records_array() -> None:
 
 
 def batch_of(count: int) -> bytes:
-    records = [make_record(case_id=i + 1) for i in range(count)]
+    records = [make_record(case_id=f"{i + 1}-1") for i in range(count)]
     return dumps({"records": records})
 
 
@@ -497,7 +497,7 @@ def test_non_object_entries_are_evaluated_slots() -> None:
         None,
         "x",
         [],
-        make_record(case_id=2, narrative="", annotations={}),
+        make_record(case_id="2-1", narrative="", annotations={}),
     ]
     response = post_batch(dumps({"records": records}))
     body = response.json()
@@ -522,7 +522,7 @@ def case_variants(word: str) -> set[str]:
 
 @pytest.mark.parametrize("spelling", sorted({v for w in TRUE_SPELLINGS for v in case_variants(w)}))
 def test_true_spellings_echo_on_success(spelling: str) -> None:
-    raw = example_bytes("valid-record.json")
+    raw = example_bytes("metadata-record.json")
     response = post_single(raw, query=f"echo={spelling}")
     assert response.status == 200
     assert echo_bytes(response) == raw.strip()
@@ -532,13 +532,13 @@ def test_true_spellings_echo_on_success(spelling: str) -> None:
 
 @pytest.mark.parametrize("spelling", sorted({v for w in FALSE_SPELLINGS for v in case_variants(w)}))
 def test_false_spellings_omit_echo(spelling: str) -> None:
-    response = post_single(example_bytes("valid-record.json"), query=f"echo={spelling}")
+    response = post_single(example_bytes("metadata-record.json"), query=f"echo={spelling}")
     assert response.status == 200
     assert "echo" not in response.json()
 
 
 def test_default_omits_echo() -> None:
-    assert "echo" not in post_single(example_bytes("valid-record.json")).json()
+    assert "echo" not in post_single(example_bytes("metadata-record.json")).json()
 
 
 @pytest.mark.parametrize(
@@ -572,7 +572,7 @@ def test_default_omits_echo() -> None:
 )
 def test_invalid_query_options(query: str, expected: list[tuple[str, str]]) -> None:
     for post in (post_single, post_batch):
-        fixture = "valid-record.json" if post is post_single else "valid-batch.json"
+        fixture = "metadata-record.json" if post is post_single else "valid-batch.json"
         response = post(example_bytes(fixture), query=query)
         body = assert_request_failure(response, 422, "INVALID_OPTIONS", len(expected))
         assert [(i["path"], i["code"]) for i in body["issues"]] == expected
@@ -580,7 +580,7 @@ def test_invalid_query_options(query: str, expected: list[tuple[str, str]]) -> N
 
 
 def test_invalid_echo_example_matches_spec() -> None:
-    body = post_single(example_bytes("valid-record.json"), query="echo=maybe").json()
+    body = post_single(example_bytes("metadata-record.json"), query="echo=maybe").json()
     assert body == {
         "valid": False,
         "mode": "single",
@@ -606,7 +606,7 @@ def test_invalid_echo_example_matches_spec() -> None:
 
 
 def test_empty_query_segments_are_ignored() -> None:
-    assert post_single(example_bytes("valid-record.json"), query="&&echo=1&").status == 200
+    assert post_single(example_bytes("metadata-record.json"), query="&&echo=1&").status == 200
 
 
 # ---------------------------------------------------------------- V21 gate precedence
@@ -659,11 +659,11 @@ def test_invalid_echo_beats_bad_envelope_and_bad_records() -> None:
 
 
 def test_repeated_requests_are_equivalent_and_allocate_nothing() -> None:
-    raw = example_bytes("valid-record.json")
+    raw = example_bytes("metadata-record.json")
     first = post_single(raw, query="echo=true")
     second = post_single(raw, query="echo=true")
     assert first.body == second.body
-    batch = example_bytes("repeated-case-pair-batch.json")
+    batch = example_bytes("repeated-case-id-batch.json")
     assert post_batch(batch).body == post_batch(batch).body
     # The same record in separate requests is never a duplicate.
     assert post_single(raw).status == 200

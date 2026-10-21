@@ -12,13 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from scat_validator.config import (
     LABELS,
     MAX_BATCH_RECORDS,
-    MAX_ID,
+    MAX_CASE_ID_CHARS,
     MAX_ISSUES,
     MAX_PATH_BYTES,
     MAX_SAFE_NUMBER,
     MAX_USERNAME_CHARS,
     MIN_BATCH_RECORDS,
-    MIN_ID,
     OFFSET_UNIT,
 )
 
@@ -29,14 +28,23 @@ INTEGER_TOKEN_NOTE: Final = (
     "and strings are rejected without coercion."
 )
 
-RecordId = Annotated[
-    int,
+# <case number>-<version>: the hyphen separates the case number from a decimal version.
+CASE_ID_PATTERN: Final = r"^[A-Za-z0-9](?:[A-Za-z0-9._]*[A-Za-z0-9])?-[0-9]+$"
+
+CaseId = Annotated[
+    str,
     Field(
         strict=True,
-        ge=MIN_ID,
-        le=MAX_ID,
-        json_schema_extra={"format": "int32"},
-        description="Positive signed 32-bit identifier (an external claim)." + INTEGER_TOKEN_NOTE,
+        min_length=1,
+        max_length=MAX_CASE_ID_CHARS,
+        pattern=CASE_ID_PATTERN,
+        description=(
+            "External case identifier `<case number>-<version>`, e.g. `12345678-1` (an external "
+            "claim). The case number uses ASCII letters and digits, optionally `.` or `_` "
+            "between them; the version is ASCII digits. Compared and preserved as an exact "
+            "string; JSON numbers are rejected without coercion."
+        ),
+        examples=["12345678-1"],
     ),
 ]
 Offset = Annotated[
@@ -84,15 +92,15 @@ Narrative = Annotated[
     ),
 ]
 
-ID_ADAPTER: Final[TypeAdapter[int]] = TypeAdapter(RecordId)
+CASE_ID_ADAPTER: Final[TypeAdapter[str]] = TypeAdapter(CaseId)
 OFFSET_UNIT_ADAPTER: Final[TypeAdapter[str]] = TypeAdapter(
     OffsetUnit, config=ConfigDict(strict=True)
 )
 
 
-def is_valid_id(value: int) -> bool:
+def is_valid_case_id(value: str) -> bool:
     try:
-        ID_ADAPTER.validate_python(value)
+        CASE_ID_ADAPTER.validate_python(value)
     except ValidationError:
         return False
     return True
@@ -139,22 +147,35 @@ AnnotationMap.__doc__ = (
 
 
 class Record(BaseModel):
-    """A case record. Six owned properties; every other property is foreign metadata."""
+    """A case record. Three required and two optional owned properties; every other property
+    is foreign metadata. The default submission is a narrative without annotations."""
 
     model_config = ConfigDict(
         extra="allow", strict=True, json_schema_extra={"x-note": _METADATA_NOTE}
     )
 
-    project_id: RecordId
-    case_id: RecordId
+    case_id: CaseId
     username: Username
     narrative: Narrative
-    offset_unit: OffsetUnit = Field(description="Exactly `unicode-code-point`.")
-    annotations: AnnotationMap
+    offset_unit: OffsetUnit = Field(
+        default=OFFSET_UNIT,
+        description=(
+            "Optional. Offsets are always Unicode code points; when supplied, the value must be "
+            "exactly `unicode-code-point`. The unit used is reported in each record observation; "
+            "an absent value is not inserted into the source or echo."
+        ),
+    )
+    annotations: AnnotationMap = Field(
+        default_factory=dict,
+        description=(
+            "Optional pre-existing annotations. Absent means zero annotations; explicit null is "
+            "a type error."
+        ),
+    )
 
 
 class BatchEnvelope(BaseModel):
-    """Closed batch envelope. Each (project_id, case_id) pair must be unique within the batch."""
+    """Closed batch envelope. Each case_id must be unique within the batch."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -263,11 +284,8 @@ class RecordObservation(TypedDict):
     path: Annotated[str, Field(description='"" for single mode; "/records/<index>" for batch.')]
     valid: bool
     issue_count: int
-    project_id: Annotated[
-        int | None, Field(description="Original value only if the field independently passes.")
-    ]
     case_id: Annotated[
-        int | None, Field(description="Original value only if the field independently passes.")
+        str | None, Field(description="Original value only if the field independently passes.")
     ]
     username: Annotated[
         str | None, Field(description="Original value only if the field independently passes.")
@@ -275,6 +293,15 @@ class RecordObservation(TypedDict):
     narrative_code_points: Annotated[
         int | None,
         Field(description="len(narrative) when it is a Unicode-compatible string; else null."),
+    ]
+    offset_unit: Annotated[
+        OffsetUnit | None,
+        Field(
+            description=(
+                "Coordinate unit the service used for annotation offsets: `unicode-code-point` "
+                "when `offset_unit` is absent or valid; null when a supplied value is invalid."
+            )
+        ),
     ]
     annotation_count: Annotated[
         int | None,

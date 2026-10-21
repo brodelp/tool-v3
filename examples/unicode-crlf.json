@@ -1,6 +1,5 @@
 {
-  "project_id": 101,
-  "case_id": 5003,
+  "case_id": "5003-1",
   "username": "reviewer-2",
   "narrative": "A😀é\r\nB",
   "offset_unit": "unicode-code-point",

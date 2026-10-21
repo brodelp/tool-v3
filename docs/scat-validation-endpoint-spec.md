@@ -2,7 +2,7 @@
 
 ## Stage 1 — Validation and inspection API
 
-Revision 0.3 — 16 October 2026
+Revision 0.4 — 21 October 2026
 
 ### 1. Goal, authority, and scope
 
@@ -24,14 +24,15 @@ Develop in a VS Code dev container with Docker Compose, usable from Docker on Wi
 
 #### 2.1 Governing decisions
 
-- A case has one narrative; a project may contain many cases. Supplied project/case identifiers are external claims, not proof of database existence or uniqueness.
+- A case has one narrative. The supplied case identifier `<case number>-<version>` is an external claim, not proof of database existence or uniqueness. Projects are not part of the stage-one contract; a submitted `project_id` is foreign metadata (§4.1).
 - The submitting username identifies the intended annotator as claimed by the caller. Validate its syntax under §3.1 and preserve the accepted value exactly; do not authenticate, resolve, or authorize it.
 - Narratives are immutable. Preserve decoded Unicode, whitespace, and line endings; annotations use Unicode code-point offsets and exact source slices.
 - The same text may be annotated at different positions. Only repeated `(label, text, start, end)` tuples within one record are annotation duplicates; extra metadata does not distinguish duplicates. Nested, crossing, adjacent, and same-range different-label spans are intentional, supported behavior. This supersedes both the older `(label, text)` rule and revision 0.2's `(label, start, end)` rule.
 - Foreign record and annotation properties remain opaque data. Selected display of metadata is a future UI decision.
 - Any invalid record makes the whole batch invalid. Per-record results are diagnostics, not partial acceptance.
-- Within one batch, each `(project_id, case_id)` pair must be unique. Repeating only a project ID, or using the same case ID in different projects, is allowed. Repeated identifiers across separate requests remain allowed and establish neither retries nor revisions. Preserving annotation work across source updates requires a later ingestion design.
+- Within one batch, each `case_id` must be unique. Different versions of the same case number (`12345678-1`, `12345678-2`) are different identifiers. Repeated identifiers across separate requests remain allowed and establish neither retries nor revisions. Preserving annotation work across source updates requires a later ingestion design.
 - This is a new API: use snake case for SCAT-owned fields. `offsetUnit` is not an alias for `offset_unit`. Historical payloads require explicit conversion by their caller.
+- The default submission is a narrative without annotations. Pre-existing annotations remain supported as an optional `annotations` map. Offsets are always Unicode code points; callers need not declare `offset_unit`, and the service reports the unit it used in every record observation (§6.3).
 
 #### 2.2 Fixed stage-one limits
 
@@ -54,22 +55,21 @@ Bound both diagnostic collection sizes and individual diagnostic strings. Long s
 
 #### 2.3 Standards and explicit application policies
 
-Use standard JSON and HTTP syntax and the documented framework conventions unless this contract explicitly narrows a field. Positive 32-bit identifiers, the username profile, integer-token-only IDs/offsets, bounded numeric values, and strict unknown-label/envelope handling are application policies, not claims that other representations violate JSON. Exact preservation is a deliberate requirement beyond the default floating-point handling in many web stacks. Unicode code-point offsets, overlapping annotations, and detailed validation reports serve this annotation/inspection workflow. Flag any proposed substantial departure from established standards or these policies for a product decision before implementation; do not silently introduce normalization, coercion, or new restrictions.
+Use standard JSON and HTTP syntax and the documented framework conventions unless this contract explicitly narrows a field. The case-identifier profile, the username profile, integer-token-only offsets, bounded numeric values, and strict unknown-label/envelope handling are application policies, not claims that other representations violate JSON. Exact preservation is a deliberate requirement beyond the default floating-point handling in many web stacks. Unicode code-point offsets, overlapping annotations, and detailed validation reports serve this annotation/inspection workflow. Flag any proposed substantial departure from established standards or these policies for a product decision before implementation; do not silently introduce normalization, coercion, or new restrictions.
 
 ### 3. Request data contract
 
 #### 3.1 Record
 
-Each record is a JSON object with these six required properties. Missing and explicit `null` are different failures; neither supplies a valid required value.
+Each record is a JSON object with three required and two optional owned properties. The minimal valid record is `{"case_id": "12345678-1", "username": "demo_annotator", "narrative": "Aspirin caused nausea."}`. Missing and explicit `null` are different: a missing required property fails `REQUIRED_FIELD`, a missing optional property takes the meaning below, and an explicit `null` is never a valid value for any of the five.
 
-| Property | Required value |
-| --- | --- |
-| `project_id` | Strict integer in `[1, 2147483647]`, the positive range of a signed 32-bit integer. Zero, negative values, and larger values are invalid. |
-| `case_id` | Same rule as `project_id`. |
-| `username` | String of 1–255 characters matching the username/email profile below. Preserve the accepted value and its case exactly. |
-| `narrative` | String containing at least one non-whitespace code point. Preserve the decoded string exactly. |
-| `offset_unit` | Exactly the string `unicode-code-point`. |
-| `annotations` | Object mapping configured label names to arrays of annotation objects. `{}` is valid. |
+| Property | Presence | Value |
+| --- | --- | --- |
+| `case_id` | Required | String `<case number>-<version>` of 1–64 characters: a case number of ASCII letters and digits, optionally with `.` or `_` between them (starting and ending with a letter or digit), then exactly one `-`, then a version of one or more ASCII digits. Pattern `^[A-Za-z0-9](?:[A-Za-z0-9._]*[A-Za-z0-9])?-[0-9]+$`, matched against the whole value (a trailing newline is not accepted). Example `12345678-1`. Preserve and compare the exact string: no trimming, case folding, or numeric interpretation, so `5-01` and `5-1` differ. JSON numbers are rejected, not converted. |
+| `username` | Required | String of 1–255 characters matching the username/email profile below. Preserve the accepted value and its case exactly. |
+| `narrative` | Required | String containing at least one non-whitespace code point. Preserve the decoded string exactly. |
+| `offset_unit` | Optional | When supplied, exactly the string `unicode-code-point`; no aliases or case variants. When absent, offsets are Unicode code points. The absent value is not inserted into the source or echo. |
+| `annotations` | Optional | Object mapping configured label names to arrays of annotation objects. `{}` is valid. When absent, the record has zero annotations and nothing is inserted into the source or echo. |
 
 **Username profile.** There is no universal username grammar. Use this explicit, conventional ASCII profile for stage 1:
 
@@ -80,7 +80,7 @@ Each record is a JSON object with these six required properties. Missing and exp
 
 The ASCII restriction is this application's current username policy, not a claim that internationalized usernames or email addresses are invalid standards. The narrative and metadata retain their separate Unicode policy. For narrative emptiness checks, whitespace means Python `str.isspace()` on the pinned runtime. Check without modifying the value; an empty string also fails.
 
-**Strict integer** means a JSON number token with neither decimal point nor exponent. Reject booleans, strings, `1.0`, and `1e0` for IDs and annotation offsets; do not coerce them. IDs additionally require the positive signed-32-bit range above. Offsets have their own nonnegative range in §3.3 and the numeric compatibility bounds in §4.2; the ID lower bound must not make a start offset of zero invalid. Decimal and exponent notation are standard JSON numbers and remain eligible in metadata. JSON Schema's mathematical `integer` type alone cannot express this field-specific token-spelling rule, so document and test it at the HTTP boundary.
+**Strict integer** means a JSON number token with neither decimal point nor exponent. Reject booleans, strings, `1.0`, and `1e0` for annotation offsets; do not coerce them. Offsets have their own nonnegative range in §3.3 and the numeric compatibility bounds in §4.2; a start offset of zero is valid. Decimal and exponent notation are standard JSON numbers and remain eligible in metadata. JSON Schema's mathematical `integer` type alone cannot express this field-specific token-spelling rule, so document and test it at the HTTP boundary.
 
 A narrative several pages long is an ordinary JSON string/Python `str`. Do not replace it with lines, base64, HTML, or a file upload. No trimming, Unicode normalization, newline conversion, markup interpretation, or text correction is permitted. JSON escape spelling is not part of the decoded narrative.
 
@@ -90,7 +90,7 @@ The authoritative keys, in canonical order, are:
 
 `SDrug`, `CDrug`, `ODrug`, `Dose`, `Treatment`, `AE`, `mAE`, `bSYM`, `RO`, `Dx`, `CoD`, `Lab`, `FHx`, `MHx`, `IND`, `Status`, `Age`, `Sex`, `Date`, `Time`, `Duration`, `Relative`, `Latency`, `Temporal`.
 
-Maintain this ordered set once in runtime code; derive validation and OpenAPI from it. Spelling and case are significant. Missing known keys mean zero annotations and must remain missing in an echo. Unknown keys are errors even with empty arrays. Do not treat unknown labels as metadata, infer clinical meanings from abbreviations, implement aliases, or add runtime label management.
+Maintain this ordered set once in runtime code; derive validation and OpenAPI from it. Spelling and case are significant. Missing known keys (or a missing `annotations` map) mean zero annotations and must remain missing in an echo. Unknown keys are errors even with empty arrays. Do not treat unknown labels as metadata, infer clinical meanings from abbreviations, implement aliases, or add runtime label management.
 
 #### 3.3 Annotation
 
@@ -112,15 +112,15 @@ Within each record, reject every occurrence after the first of a `(label, text, 
 
 Once the envelope and array length are valid, evaluate **every entry**, including non-object entries. A non-object entry is one invalid record slot and must not prevent evaluation of subsequent entries. Invalid envelopes (including absent/non-array/empty/oversized `records`) fail before record evaluation; do not return a report for a partial or empty batch.
 
-During record evaluation, reject every occurrence after the first of a `(project_id, case_id)` pair with `DUPLICATE_RECORD` at the later record's path. Compare only independently valid IDs under §3.1, even if another field in the earlier record fails. Invalid/missing IDs do not establish a pair. Check uniqueness across the entire batch, even after diagnostic caps are reached; do not deduplicate, merge, select a preferred version, or stop evaluating later records. Report the failure in the later record's `record_identity_uniqueness` check and issue count. No cross-request registry or database lookup is involved.
+During record evaluation, reject every occurrence after the first of a `case_id` with `DUPLICATE_RECORD` at the later record's path. Compare only independently valid case identifiers under §3.1, by exact string equality, even if another field in the earlier record fails. Invalid/missing identifiers do not establish an identity. A foreign `project_id` plays no part. Check uniqueness across the entire batch, even after diagnostic caps are reached; do not deduplicate, merge, select a preferred version, or stop evaluating later records. Report the failure in the later record's `record_identity_uniqueness` check and issue count. No cross-request registry or database lookup is involved.
 
 ### 4. JSON compatibility and foreign metadata
 
 #### 4.1 Preservation boundary
 
-Every record property except the six in §3.1 is foreign metadata. Every annotation property except `text`, `start`, and `end` is foreign annotation metadata. Preserve nested objects, arrays in their original order, empty containers, explicit nulls, booleans, strings, and accepted numbers.
+Every record property except the five owned properties in §3.1 is foreign metadata, including `project_id`, which earlier revisions owned. Every annotation property except `text`, `start`, and `end` is foreign annotation metadata. Preserve nested objects, arrays in their original order, empty containers, explicit nulls, booleans, strings, and accepted numbers.
 
-Names such as `id`, `label`, `color`, `extras`, `echo`, `_scatSource`, `__proto__`, and Pydantic-like internal names remain foreign data. Never merge them into application attributes or interpret provenance markers. A record field named `offsetUnit` is preserved as metadata; it does not satisfy a missing `offset_unit`.
+Names such as `id`, `label`, `color`, `extras`, `echo`, `_scatSource`, `__proto__`, and Pydantic-like internal names remain foreign data. Never merge them into application attributes or interpret provenance markers. A record field named `offsetUnit` is preserved as metadata; it neither replaces nor changes `offset_unit`.
 
 Keep the losslessly decoded source tree separate from typed observations and model defaults. Never mutate it during validation. Echo must come from that source representation or the already validated original JSON document, not a narrowed model dump. Missing properties stay missing; no empty label arrays, internal fields, computed fields, or defaults are inserted. Apply this boundary at both record and annotation levels.
 
@@ -130,10 +130,10 @@ Preservation means exact JSON values and structure, including exact numeric valu
 
 These restrictions apply recursively to **all** record content, including core fields, malformed annotation content, and opaque metadata:
 
-- Every number's **exact** value must be within `[-9007199254740991, 9007199254740991]`. This is a separate general numeric compatibility bound, not the allowed ID range. Negative and zero metadata values remain valid. Determine range membership without first rounding to binary floating point, expanding huge powers of ten, or converting an enormous token to an unbounded integer. Values outside the bound receive `UNSAFE_NUMBER`.
+- Every number's **exact** value must be within `[-9007199254740991, 9007199254740991]`. This is a general numeric compatibility bound. Negative and zero metadata values remain valid. Determine range membership without first rounding to binary floating point, expanding huge powers of ten, or converting an enormous token to an unbounded integer. Values outside the bound receive `UNSAFE_NUMBER`.
 - Retain the original lexeme of every accepted number. Inspect numbers using an exact decimal representation or bounded, exact inspection of their sign/coefficient/exponent; never use a binary64 value as the authoritative source. An internal representation change that preserves a JSON number exactly is parsing, not permission to change the submitted value or its JSON type.
 - Standard decimal/exponent forms such as `0.1`, `1.0`, `1e0`, `0.100000000000000005`, and `1e-400` are valid metadata within the bound and must survive echo exactly. `1e-400` must not become zero. `1e400` and `9007199254740993.0` fail with `UNSAFE_NUMBER` based on their exact values. Do not reject ordinary decimals such as `0.1` merely because binary64 cannot represent them exactly; use a lossless representation.
-- Numeric-looking strings remain strings. They may carry externally defined exact values outside the numeric profile, but this service must neither interpret them as numbers nor convert rejected numbers to strings. Required project/case IDs remain strict numeric integer tokens. A representation that cannot preserve an input exactly must reject it, never approximate it; an implementation that rejects otherwise supported values merely because it used a lossy decoder does not meet this contract.
+- Numeric-looking strings remain strings. They may carry externally defined exact values outside the numeric profile, but this service must neither interpret them as numbers nor convert rejected numbers to strings. A representation that cannot preserve an input exactly must reject it, never approximate it; an implementation that rejects otherwise supported values merely because it used a lossy decoder does not meet this contract.
 - Reject U+0000 and unpaired surrogate code points in every string and property name. Valid escaped surrogate pairs decode to a single Unicode scalar and are accepted. Never replace or delete unsupported characters.
 
 The Unicode policy anticipates a UTF-8 PostgreSQL text/JSONB boundary; it is not database validation. No database lookup or round trip is performed. The numeric bound prevents large-integer interoperability problems but does not make JavaScript `Number` exact for arbitrary decimals. Future clients that inspect, edit, or resubmit metadata must retain its original JSON or use lossless number parsing/serialization. Do not route exact metadata through ordinary `JSON.parse`/`JSON.stringify` numeric conversions and claim a lossless round trip.
@@ -230,30 +230,31 @@ Every observation contains all fields below. Use JSON null where specified, not 
 | --- | --- |
 | `index`, `path` | Zero-based slot and body pointer: `0` / `""` for single; `i` / `/records/i` for batch. |
 | `valid`, `issue_count` | Whether the record passes all applicable rules; complete issue count even when some issues are omitted. |
-| `project_id`, `case_id`, `username` | Original value only if that field independently passes its type/value/JSON-compatibility rules; otherwise null. Other invalid fields do not hide valid identity fields. |
+| `case_id`, `username` | Original value only if that field independently passes its type/value/JSON-compatibility rules; otherwise null. Other invalid fields do not hide valid identity fields. |
 | `narrative_code_points` | `len(narrative)` when it is a Unicode-compatible string, even if empty/whitespace-only; otherwise null. An observation, not a claim of validity. |
-| `annotation_count`, `annotations_by_label` | Counts of supplied array entries when the map is an object, all keys are known, and all values are arrays. Count invalid/non-object entries too. If any map/key/array condition fails or the map is missing, both fields are null. |
+| `offset_unit` | The coordinate unit the service used: `unicode-code-point` when `offset_unit` is absent or valid; null when a supplied value fails its type/value/JSON-compatibility rules, and for a non-object record. This is the export of the offset unit; the echo still omits an absent `offset_unit`. |
+| `annotation_count`, `annotations_by_label` | Counts of supplied array entries when the map is an object, all keys are known, and all values are arrays. Count invalid/non-object entries too. A missing map counts as 0 and `{}`. If any map/key/array condition fails (including an explicit `null` map), both fields are null. |
 | `checks` | Exactly the nine statuses in §6.4. |
 
-`annotations_by_label` includes only known labels with nonzero counts, in canonical order. For `{}`, the count is 0 and the map is `{}`. A non-object record has null identity/length/count observations, failed `field_types`, skipped structural/dependent checks, and a separately evaluated `json_values` check.
+`annotations_by_label` includes only known labels with nonzero counts, in canonical order. For `{}`, the count is 0 and the map is `{}`. A non-object record has null identity/length/unit/count observations, failed `field_types`, skipped structural/dependent checks, and a separately evaluated `json_values` check.
 
 #### 6.4 Check coverage and dependencies
 
-These names are authoritative. `json_values` covers exact numeric/Unicode compatibility; `field_values` covers ID bounds, username syntax, narrative emptiness, and the offset unit. `record_identity_uniqueness` adds the within-batch identity check.
+These names are authoritative. `json_values` covers exact numeric/Unicode compatibility; `field_values` covers case-identifier syntax, username syntax, narrative emptiness, and the offset unit. `record_identity_uniqueness` adds the within-batch identity check.
 
 | Check | Rules and prerequisites |
 | --- | --- |
 | `json_values` | Recursive numeric/Unicode restrictions in §4.2 across the whole record value. Always evaluable after decoding, including non-object records. |
-| `required_fields` | Presence of six record fields and three fields in each annotation object. A non-object parent blocks child presence checks; do not invent missing children. |
+| `required_fields` | Presence of the three required record fields and three fields in each annotation object. A non-object parent blocks child presence checks; do not invent missing children. |
 | `field_types` | Record object; present core-field types; annotations map; each label array; annotation objects and present core-field types. Missing fields block type checks. Decimal/exponent tokens fail strict-integer checks even when their exact value is integral. Lossless token wrappers retain the original JSON kind. |
-| `field_values` | Positive signed-32-bit project/case IDs, username/email syntax and length, non-whitespace narrative, and exact `offset_unit`. Requires the field to be present, correctly typed, and JSON-compatible. General numeric compatibility belongs to `json_values`; annotation ranges belong to `offset_ranges`. |
+| `field_values` | `case_id` syntax, username/email syntax and length, non-whitespace narrative, and exact `offset_unit` when supplied. Requires the field to be present, correctly typed, and JSON-compatible; an absent optional `offset_unit` has nothing to check and blocks nothing. General numeric compatibility belongs to `json_values`; annotation ranges belong to `offset_ranges`. |
 | `label_membership` | Every annotations-map key is known. Requires an object map. Unknown keys fail regardless of value. |
-| `offset_ranges` | Range inequality in §3.3. Requires a Unicode-compatible narrative string, correct offset unit, and two strict safe offsets. |
+| `offset_ranges` | Range inequality in §3.3. Requires a Unicode-compatible narrative string, an absent or correct offset unit, and two strict safe offsets. |
 | `text_matches` | Exact slice equality. Requires a passed range check and Unicode-compatible string `text`. |
 | `annotation_duplicates` | Repeated `(label, text, start, end)` tuples. Requires a known label, Unicode-compatible string text, and strict safe offsets; independent of narrative matching/range validity. |
-| `record_identity_uniqueness` | Unique `(project_id, case_id)` pair within the current batch. Requires both IDs to pass independently. Later repeated pairs fail; invalid/missing IDs skip this check. A single record with valid IDs passes without any external lookup. |
+| `record_identity_uniqueness` | Unique `case_id` within the current batch. Requires `case_id` to pass independently. Later repeats fail; an invalid/missing `case_id` skips this check. A single record with a valid `case_id` passes without any external lookup. |
 
-For each check aggregate all items: **failed** if any eligible item fails; otherwise **skipped** if any required item is blocked; otherwise **passed**. A failed status may also contain blocked work. Dependencies are evaluated per annotation: a structurally valid map containing no annotation items passes annotation checks vacuously, even when unrelated record fields fail. A missing/malformed map or array blocks dependent checks; it is not a successful “zero annotations” case.
+For each check aggregate all items: **failed** if any eligible item fails; otherwise **skipped** if any required item is blocked; otherwise **passed**. A failed status may also contain blocked work. Dependencies are evaluated per annotation: a structurally valid map containing no annotation items passes annotation checks vacuously, even when unrelated record fields fail. A missing map is the default “zero annotations” case and also passes vacuously. A malformed (non-object or `null`) map or a malformed array blocks dependent checks.
 
 Continue examining other fields, annotations, and records when one fails. In arrays under unknown labels, still inspect annotation structure and range/text integrity; only duplicate checks require known labels. For existing annotations, a missing narrative skips range/text checks but does not prevent duplicate/type checks. A wrong offset unit skips ranges/text instead of interpreting guessed coordinates. An empty-but-compatible narrative can still be measured and range-checked; emptiness fails separately.
 
@@ -298,9 +299,9 @@ Use these issue codes; do not expose library-specific validation codes:
 | Code | Location/rule |
 | --- | --- |
 | `REQUIRED_FIELD` | Missing required property; point to the missing property. |
-| `INVALID_TYPE` | Wrong container/scalar type or non-integer-token ID/offset. |
-| `EMPTY_VALUE` | Empty/whitespace-only username or narrative. |
-| `INVALID_ID` | Correctly typed project/case ID outside `[1, 2147483647]`, unless already rejected by `json_values`; point to the ID field. |
+| `INVALID_TYPE` | Wrong container/scalar type, including a non-string `case_id` or a non-integer-token offset. |
+| `EMPTY_VALUE` | Empty/whitespace-only `case_id`, username, or narrative. |
+| `INVALID_ID` | Nonempty string `case_id` outside the §3.1 case-identifier syntax or length, unless already rejected by `json_values`; point to `/case_id` within the record. |
 | `INVALID_USERNAME` | Nonempty username outside the permitted handle/email syntax or length; point to `/username` within the record. |
 | `UNSAFE_NUMBER` | Numeric compatibility failure at the number's path. |
 | `UNSUPPORTED_UNICODE` | Forbidden code point; one issue per affected string/property name. |
@@ -310,7 +311,7 @@ Use these issue codes; do not expose library-specific validation codes:
 | `INVALID_RANGE` | One issue per annotation with an eligible failing range; point to the annotation object. |
 | `TEXT_MISMATCH` | Point to annotation `text`; quote differs from a valid source slice. |
 | `DUPLICATE_ANNOTATION` | Point to each repeated annotation object after the first. |
-| `DUPLICATE_RECORD` | Repeated independently valid `(project_id, case_id)` pair; point to each later record object. |
+| `DUPLICATE_RECORD` | Repeated independently valid `case_id`; point to each later record object. |
 | `LIMIT_EXCEEDED` | Root for depth; `/records` for length outside 1–100. |
 | `INVALID_QUERY_PARAMETER` | `echo` value outside the boolean spellings in §5. |
 | `DUPLICATE_QUERY_PARAMETER` | Repeated `echo`; report once and do not validate competing values. |
@@ -321,31 +322,15 @@ For envelope failures, check required/type/length rules for `records` and unknow
 
 ### 8. Reference examples
 
-#### 8.1 Valid record and success report
+#### 8.1 Minimal record and success report
 
-Save this as `examples/valid-record.json`. The narrative has 22 code points; foreign fields must survive echo.
+Save this as `examples/valid-record.json`. It is the minimal submission: a narrative with no annotations, no `offset_unit`, and no foreign fields. The narrative has 22 code points.
 
 ```json
 {
-  "project_id": 101,
-  "case_id": 5001,
+  "case_id": "12345678-1",
   "username": "demo_annotator",
-  "narrative": "Aspirin caused nausea.",
-  "offset_unit": "unicode-code-point",
-  "annotations": {
-    "SDrug": [
-      {"text": "Aspirin", "start": 0, "end": 7, "external_id": "ann-001"}
-    ],
-    "AE": [
-      {"text": "nausea", "start": 15, "end": 21}
-    ]
-  },
-  "source_metadata": {
-    "source_record_id": "external-5001",
-    "reviewed": false,
-    "tags": ["fictional", "validation-demo"],
-    "optional_value": null
-  }
+  "narrative": "Aspirin caused nausea."
 }
 ```
 
@@ -364,12 +349,12 @@ HTTP 200 without echo:
       "path": "",
       "valid": true,
       "issue_count": 0,
-      "project_id": 101,
-      "case_id": 5001,
+      "case_id": "12345678-1",
       "username": "demo_annotator",
       "narrative_code_points": 22,
-      "annotation_count": 2,
-      "annotations_by_label": {"SDrug": 1, "AE": 1},
+      "offset_unit": "unicode-code-point",
+      "annotation_count": 0,
+      "annotations_by_label": {},
       "checks": {
         "json_values": "passed",
         "required_fields": "passed",
@@ -386,11 +371,8 @@ HTTP 200 without echo:
   "issues": [],
   "issue_count": 0,
   "omitted_issue_count": 0,
-  "foreign_fields": [
-    {"path": "/source_metadata", "type": "object"},
-    {"path": "/annotations/SDrug/0/external_id", "type": "string"}
-  ],
-  "foreign_field_count": 2,
+  "foreign_fields": [],
+  "foreign_field_count": 0,
   "omitted_foreign_field_count": 0,
   "checks_not_performed": [
     "authentication",
@@ -402,11 +384,27 @@ HTTP 200 without echo:
 }
 ```
 
-With `?echo=true`, additionally return `echo` equal to the input object. A foreign input property named `echo` remains inside that object and does not control the query option.
+With `?echo=true`, additionally return `echo` equal to the input object. Nothing is added: no `offset_unit` and no `annotations` map.
+
+`examples/annotated-record.json` is the same record with pre-existing annotations and still no foreign fields; its report differs only in `annotation_count: 2` and `annotations_by_label: {"SDrug": 1, "AE": 1}`:
+
+```json
+{
+  "case_id": "12345678-1",
+  "username": "demo_annotator",
+  "narrative": "Aspirin caused nausea.",
+  "annotations": {
+    "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
+    "AE": [{"text": "nausea", "start": 15, "end": 21}]
+  }
+}
+```
+
+API documentation examples use exactly these two records. Foreign-metadata behavior is documented in the schema and exercised by separate fixtures, such as `examples/metadata-record.json`: the annotated record plus `"offset_unit": "unicode-code-point"`, an annotation `external_id`, and a `source_metadata` object, which must survive echo. A foreign input property named `echo` remains inside the record and does not control the query option.
 
 #### 8.2 Invalid batch
 
-Construct `examples/invalid-batch.json` as `{"records":[record_a,record_b]}` using two full copies of §8.1. In the second copy change `case_id` to 5002 and only the AE quote from `nausea` to `Nausea`.
+Construct `examples/invalid-batch.json` as `{"records":[record_a,record_b]}` using two copies of `examples/annotated-record.json` (§8.1). In the second copy change `case_id` to `12345679-1` and only the AE quote from `nausea` to `Nausea`.
 
 Expect HTTP 422, `error.code="INVALID_DOCUMENT"`, `valid=false`, counts `(record_count, valid_record_count, invalid_record_count)=(2,1,1)`, and `issue_count=1`. Both records have two supplied annotations. Only the second record's `text_matches` check fails; all other checks pass. Its issue count is 1 and the first record's is 0. Return this issue and no echo, even with `echo=true`:
 
@@ -455,9 +453,9 @@ An otherwise valid request using `?echo=maybe` returns HTTP 422. `?echo=1` and `
 
 #### 8.5 Identity, username, numeric, and diagnostic boundary fixtures
 
-- IDs `1` and `2147483647` pass. IDs `0`, `-1`, and `2147483648` fail with `INVALID_ID`; `true`, `"1"`, `1.0`, and `1e0` fail with `INVALID_TYPE`. Annotation start `0` remains valid when the full range is valid.
+- Case identifiers `12345678-1`, `A1-0`, `ab.c_d-12`, `0-007`, and a 64-character value pass unchanged. `12345678`, `-1`, `1-`, `1-2-3`, `12345678-v1`, `.a-1`, `é-1`, a leading/trailing space or trailing newline, and a 65-character value fail with `INVALID_ID`; `""` and whitespace-only values fail with `EMPTY_VALUE`; `5001`, `true`, `1.0`, `null`, and containers fail with `INVALID_TYPE`. Annotation start `0` remains valid when the full range is valid.
 - `reviewer_2`, `brandon.penny`, `Brandon.Penny+review@example.com`, and `o'brien@example.com` pass the appropriate username profile and retain their original spelling. Leading/trailing/internal whitespace, newlines, an empty local part, a display name, an emoji, and a 256-character handle fail. A 255-character ASCII alphanumeric handle passes; email length limits still apply separately.
-- Add the following foreign property to §8.1 as a raw JSON fixture. Every numeric token must be returned unchanged in a successful echo. Do not create this fixture through a float-based serializer:
+- Add the following foreign property to `examples/metadata-record.json` (§8.1) as a raw JSON fixture. Every numeric token must be returned unchanged in a successful echo. Do not create this fixture through a float-based serializer:
 
 ```json
 {
@@ -475,7 +473,7 @@ An otherwise valid request using `?echo=maybe` returns HTTP 422. `?echo=1` and `
 ```
 
 - Replacing any numeric metadata value with `9007199254740993`, `9007199254740993.0`, or `1e400` fails with `UNSAFE_NUMBER`; the string `"9007199254740993"` stays a string and passes. Bare `NaN`/`Infinity` fail at decoding. Excessive exponent text must be inspected without integer conversion failures, exponent expansion, or loss of precision.
-- A batch with two otherwise valid §8.1 records using the same pair `(101, 5001)` has counts `(2, 1, 1)` and one `DUPLICATE_RECORD` at `/records/1`; the later record's `record_identity_uniqueness` fails. Different case IDs in project 101, or case 5001 in different projects, pass. Sending the same record in separate requests also passes.
+- A batch with two otherwise valid §8.1 records using the same `case_id` has counts `(2, 1, 1)` and one `DUPLICATE_RECORD` at `/records/1`; the later record's `record_identity_uniqueness` fails, even if the records carry different foreign `project_id` values. Different case numbers, different versions of one case number (`5001-1`, `5001-2`), and differently spelled versions (`5001-1`, `5001-01`) pass. Sending the same record in separate requests also passes.
 - A one-MiB unknown label name containing 100 otherwise well-formed annotations with foreign properties must not produce a hundred one-MiB inventory paths. Omit those overlong inventory paths while counting them, use the bounded issue fallback with `path_truncated: true`, and keep the report within its byte budget. Test both 1,024-byte and 1,025-byte escaped Pointer boundaries, including multibyte characters, `~`, and `/`.
 
 ### 9. Implementation guidance
@@ -498,7 +496,8 @@ Use strict Pydantic field adapters/models for owned data and typed responses. Pu
 
 Manual request decoding is appropriate, but a bare `Request`/`Any` body must not erase OpenAPI. Publish model-derived schemas explicitly when needed. Resolve and test all schema references. Document:
 
-- Six required properties; positive signed-32-bit ID bounds with `format: int32`; separate offset/numeric bounds; the username/email union and 255-character maximum; extensible record/annotation objects; 24 optional label arrays with unknown labels forbidden; and the closed batch envelope with length bounds. Do not label all usernames with `format: email` or impose 32-bit ID bounds on foreign numbers.
+- Three required and two optional record properties; the `case_id` pattern, 64-character maximum, and example; the optional `offset_unit` (default `unicode-code-point`) and `annotations`; separate offset/numeric bounds; the username/email union and 255-character maximum; extensible record/annotation objects; 24 optional label arrays with unknown labels forbidden; and the closed batch envelope with length bounds. Do not label all usernames with `format: email`.
+- Request examples that lead with the minimal §8.1 record and then the annotated record, without foreign fields.
 - `echo` as an optional boolean, default `false`, with all accepted textual spellings documented; rejection of repetitions and unknown options.
 - Both response variants, nine check statuses, null observation semantics, optional error/echo/path-truncation rules, every status in §7, and diagnostic/response limits. The 422 response covers both an evaluated invalid document and RequestFailure.
 - Cross-field/wire constraints as descriptions where JSON Schema cannot enforce them: exact slices and numeric preservation, integer token spelling, annotation/batch duplicate rules, depth, UTF-8 byte limits, and query multiplicity. JSON Schema character lengths do not enforce UTF-8 byte counts.
@@ -541,8 +540,8 @@ Use meaningful pure-validator and HTTP tests. Exercise raw bytes through the act
 | --- | --- | --- |
 | V01 | Valid single/batch | §8.1 report and §8.2 failure match; health works; no DB/frontend dependency. |
 | V02 | Missing, null, wrong types | Parameterize core fields, maps, arrays, and annotation entries. No coercion or missing/type cascades; independent observations remain available. |
-| V03 | Strict integer boundary | IDs 1 and 2147483647 pass; 0, negatives, and 2147483648 fail. Bool/string/decimal/exponent IDs and offsets fail without coercion. Start offset 0 passes with a valid range. General safe numeric endpoints remain valid in metadata, including negative values; adjacent out-of-range numbers and a >4,300-digit integer fail predictably without 500. |
-| V04 | Text, usernames, and labels | Empty/whitespace-only username/narrative fails without trimming. Conventional handles and valid ASCII emails, including plus tags/apostrophes, pass unchanged. Whitespace/control/invisible characters, invalid email structure, disallowed username characters, and 256-character handles fail; a 255-character alphanumeric handle passes. Sparse/empty annotation maps pass; unknown/wrong-case labels, null arrays, and old `offsetUnit`-only input fail. |
+| V03 | Case identifiers and strict integers | §8.5 case identifiers pass/fail as listed; numeric (legacy) case identifiers fail as `INVALID_TYPE` without coercion; a foreign `project_id` is preserved and inventoried. Bool/string/decimal/exponent offsets fail without coercion. Start offset 0 passes with a valid range. General safe numeric endpoints remain valid in metadata, including negative values; adjacent out-of-range numbers and a >4,300-digit integer fail predictably without 500. |
+| V04 | Text, usernames, and labels | Empty/whitespace-only username/narrative fails without trimming. Conventional handles and valid ASCII emails, including plus tags/apostrophes, pass unchanged. Whitespace/control/invisible characters, invalid email structure, disallowed username characters, and 256-character handles fail; a 255-character alphanumeric handle passes. The minimal record (no `annotations`, no `offset_unit`) and sparse/empty annotation maps pass; a supplied wrong `offset_unit` and unknown/wrong-case labels or null arrays fail. `offsetUnit` stays metadata and never changes the unit. |
 | V05 | Unicode integrity | §8.4, tabs, literal markup, composed/decomposed forms, valid escaped surrogate pairs, and CRLF retain exact decoded values and offsets. |
 | V06 | Ranges and quotes | Negative/equal/reversed/out-of-bounds ranges and case/whitespace quote mismatches fail at specified paths. Invalid ranges skip quotes. No offset repair. |
 | V07 | Annotation duplicates | Repeated words at different positions pass; each later identical `(label, text, start, end)` tuple fails, including changed extra metadata. Different text at the same label/span is not that tuple's duplicate but must still pass exact slice matching. Missing/wrong-type/unsupported text blocks duplicate checking. Different-label, nested, crossing, and adjacent spans pass. No cross-record annotation duplicate checks. |
@@ -553,9 +552,9 @@ Use meaningful pure-validator and HTTP tests. Exercise raw bytes through the act
 | V12 | Transport | Missing/wrong Content-Type, charset/parameter variants, compression, exact byte limit and limit+1, streamed bodies without Content-Length behave as specified. No unbounded read before rejecting size. |
 | V13 | Depth/batch bounds | Depth 128 passes if otherwise valid; 129 fails controllably. Test batch sizes 0/1/100/101, malformed/unknown envelope properties, and non-object entries. |
 | V14 | Query/echo | Default and every supported false spelling omit echo; every supported true spelling, including `1`/`True`, returns full source only on success. Empty/unrecognized/whitespace-padded/repeated/unknown options fail. Test every documented spelling and case variation. Foreign `echo` does not control behavior. Invalid requests omit echo. |
-| V15 | Batch diagnostics and identities | A valid, non-object, then invalid record all receive observations; later errors are counted. Later repeated valid `(project_id, case_id)` pairs fail at their record paths, including when another field of the earlier record is invalid. Missing/invalid IDs skip uniqueness. Same project/different case and same case/different project pass. Repetitions across requests pass. No subset is accepted. |
-| V16 | Dependencies | With supplied annotations, missing narrative skips range/text but still checks duplicates; wrong unit skips range/text; a malformed array does not suppress other labels. Failed beats skipped; `{}` passes annotation checks. |
-| V17 | Observations | Counts include malformed annotation slots when arrays/keys are valid; unknown keys/non-array values make both count fields null. Identity fields validate independently. |
+| V15 | Batch diagnostics and identities | A valid, non-object, then invalid record all receive observations; later errors are counted. Later repeated valid `case_id` values fail at their record paths, including when another field of the earlier record is invalid. Missing/invalid case identifiers skip uniqueness. Different versions or spellings of a case identifier pass. Repetitions across requests pass. No subset is accepted. |
+| V16 | Dependencies | With supplied annotations, missing narrative skips range/text but still checks duplicates; wrong unit skips range/text; a malformed array does not suppress other labels. Failed beats skipped; `{}` and a missing map pass annotation checks. |
+| V17 | Observations | Counts include malformed annotation slots when arrays/keys are valid; unknown keys/non-array values make both count fields null; a missing map counts 0. Identity fields validate independently. Every observation reports `offset_unit`. |
 | V18 | Caps/order/budgets | >20 issues and >100 foreign properties produce exact totals/omitted counts, unchanged validity, and per-record issue counts. Long/repeated source names cannot multiply report size beyond the budgets; include §8.5 and maximum-input echo. Report/complete response limits are enforced before output. Reordering object keys preserves findings/order; array order stays significant. |
 | V19 | Pointers/privacy | `/`, `~`, and empty names get correct pointers. Test 1,024/1,025 UTF-8-byte boundaries after Pointer escaping, multibyte characters, whole-token ancestor fallbacks with `path_truncated: true`, and inventory omission/counts. Rejected values and raw exception inputs do not appear in messages/logs. Generic 500 discards partial results. |
 | V20 | HTTP/OpenAPI | Actual decoding and strict constraints are exercised; schemas have resolved references, correct extensibility/labels, both 422 variants, and matching examples. All POST response paths use no-store/public envelopes. |
@@ -586,7 +585,17 @@ Technical references checked 16 October 2026 (implementation guidance; the contr
 - [RFC 6901 — JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901): diagnostic path syntax/escaping.
 - [PostgreSQL 18 JSON types](https://www.postgresql.org/docs/18/datatype-json.html): Unicode/JSONB storage context only; stage 1 does not use PostgreSQL.
 
-### 13. Revision 0.3 change record
+### 13. Revision 0.4 change record
+
+Owner feedback of 21 October 2026, recorded as the product decision that §2.3 requires:
+
+- `case_id` changed from a positive 32-bit integer to a required string `<case number>-<version>` (§3.1); `INVALID_ID`/`EMPTY_VALUE` reapplied to it. Integer tokens are rejected without coercion.
+- `project_id` removed from the owned fields; when sent, it is foreign metadata. Batch identity uniqueness now uses `case_id` alone.
+- `offset_unit` is optional (absent means Unicode code points) and still validated when supplied. Every RecordObservation reports the unit used. The echo is not altered: inserting the value would contradict the §4.1 preservation boundary, so the report carries it.
+- `annotations` is optional. A narrative without annotations is the default submission, and a missing map counts as zero annotations. Pre-existing annotations remain supported unchanged.
+- Reference and API-documentation examples now lead with the minimal record and an annotated record, without foreign fields; foreign-metadata fixtures are separate.
+
+### 14. Revision 0.3 change record
 
 - Replaced signed JavaScript-safe ID allowances with positive signed-32-bit IDs; kept general metadata and offset rules separate.
 - Added a 255-character username ceiling, explicit handle/email syntax, no normalization, and stable username/ID error codes.
