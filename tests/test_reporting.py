@@ -118,7 +118,7 @@ def test_repeated_case_id_detected_after_issue_cap() -> None:
 
 
 def test_repetitions_across_requests_pass() -> None:
-    raw = example_bytes("valid-record.json")
+    raw = example_bytes("metadata-record.json")
     assert [post_single(raw).status for _ in range(3)] == [200, 200, 200]
 
 
@@ -290,13 +290,13 @@ def test_maximum_input_echo_fits_complete_response_budget() -> None:
 
 def test_report_budget_violation_is_generic_500(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reporting, "MAX_REPORT_BYTES", 500)
-    response = post_single(example_bytes("valid-record.json"), query="echo=true")
+    response = post_single(example_bytes("metadata-record.json"), query="echo=true")
     assert_internal_error(response)
 
 
 def test_complete_response_budget_violation_is_generic_500(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(reporting, "MAX_RESPONSE_BYTES", 1200)
-    raw = example_bytes("valid-record.json")
+    raw = example_bytes("metadata-record.json")
     assert post_single(raw).status == 200
     assert_internal_error(post_single(raw, query="echo=true"))
 
@@ -473,7 +473,7 @@ def test_unexpected_fault_returns_generic_500_without_partial_results(
 
     monkeypatch.setattr(reporting, "validate_record", explode)
     caplog.set_level(logging.DEBUG)
-    response = post_single(example_bytes("valid-record.json"), query="echo=true")
+    response = post_single(example_bytes("metadata-record.json"), query="echo=true")
     assert_internal_error(response)
     assert "SECRET" not in caplog.text
     assert "RuntimeError" in caplog.text

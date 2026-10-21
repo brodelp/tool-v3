@@ -30,7 +30,7 @@ def run(raw: bytes) -> tuple[IssueCollector, InventoryCollector, RecordResult]:
 
 
 def test_validator_runs_without_http_and_reports_reference_record() -> None:
-    issues, inventory, result = run(example_bytes("valid-record.json"))
+    issues, inventory, result = run(example_bytes("metadata-record.json"))
     assert issues.count == 0
     assert inventory.count == 2
     assert result.valid is True
@@ -49,7 +49,7 @@ def test_validation_module_has_no_http_dependency() -> None:
 
 
 def test_shared_identity_set_is_request_local() -> None:
-    raw = decode_document(example_bytes("valid-record.json")).value
+    raw = decode_document(example_bytes("metadata-record.json")).value
     seen: set[str] = set()
     issues, inventory = IssueCollector(), InventoryCollector()
     first = validate_record(raw, PathNode.root(), issues, inventory, seen)

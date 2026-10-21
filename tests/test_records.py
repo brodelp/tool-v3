@@ -39,7 +39,7 @@ def single(record: Any) -> Any:
 
 def raw_record(**replacements: str) -> bytes:
     """§8.1 record text with raw JSON fragments substituted for selected owned fields."""
-    text = example_bytes("valid-record.json").decode()
+    text = example_bytes("metadata-record.json").decode()
     for name, fragment in replacements.items():
         defaults = {
             "case_id": '"case_id": "5001-1"',
@@ -322,7 +322,7 @@ def test_unsafe_offset_is_unsafe_number_only() -> None:
 
 
 def metadata_record(fragment: str) -> bytes:
-    text = example_bytes("valid-record.json").decode().rstrip()
+    text = example_bytes("metadata-record.json").decode().rstrip()
     assert text.endswith("}")
     return (text[:-1].rstrip() + f',\n  "meta": {fragment}\n}}\n').encode()
 
@@ -764,7 +764,7 @@ def test_unsupported_unicode_in_narrative_quote_and_metadata() -> None:
 
 def test_unsupported_names_fall_back_to_enclosing_object() -> None:
     raw = (
-        example_bytes("valid-record.json").decode().rstrip()[:-1]
+        example_bytes("metadata-record.json").decode().rstrip()[:-1]
         + ', "\\u0000top": 1, "meta": {"ok": {"\\ud800": {"deep": "\\u0000"}}}}'
     ).encode()
     response = post_single(raw)

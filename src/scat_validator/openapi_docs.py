@@ -44,20 +44,19 @@ def _ref(name: str) -> dict[str, str]:
     return {"$ref": _REF.format(model=name)}
 
 
+# Documentation examples show only the schema's own fields: the minimal submission (a narrative
+# without annotations, the default) and the same record with pre-existing annotations. Foreign
+# metadata is described in the record schema rather than scattered through the examples.
 EXAMPLE_RECORD: Final[dict[str, Any]] = {
-    "case_id": "5001-1",
+    "case_id": "12345678-1",
     "username": "demo_annotator",
     "narrative": "Aspirin caused nausea.",
-    "offset_unit": "unicode-code-point",
+}
+EXAMPLE_ANNOTATED_RECORD: Final[dict[str, Any]] = {
+    **EXAMPLE_RECORD,
     "annotations": {
-        "SDrug": [{"text": "Aspirin", "start": 0, "end": 7, "external_id": "ann-001"}],
+        "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
         "AE": [{"text": "nausea", "start": 15, "end": 21}],
-    },
-    "source_metadata": {
-        "source_record_id": "external-5001",
-        "reviewed": False,
-        "tags": ["fictional", "validation-demo"],
-        "optional_value": None,
     },
 }
 
@@ -65,7 +64,9 @@ _ALL_PASSED: Final = dict.fromkeys(CHECKS, "passed")
 _NOT_PERFORMED: Final = list(CHECKS_NOT_PERFORMED)
 
 
-def _observation(index: int, path: str, case_id: str, *, valid: bool) -> dict[str, Any]:
+def _observation(
+    index: int, path: str, case_id: str, *, annotated: bool, valid: bool = True
+) -> dict[str, Any]:
     checks = dict(_ALL_PASSED)
     if not valid:
         checks["text_matches"] = "failed"
@@ -78,57 +79,65 @@ def _observation(index: int, path: str, case_id: str, *, valid: bool) -> dict[st
         "username": "demo_annotator",
         "narrative_code_points": 22,
         "offset_unit": "unicode-code-point",
-        "annotation_count": 2,
-        "annotations_by_label": {"SDrug": 1, "AE": 1},
+        "annotation_count": 2 if annotated else 0,
+        "annotations_by_label": {"SDrug": 1, "AE": 1} if annotated else {},
         "checks": checks,
     }
 
 
-EXAMPLE_SINGLE_REPORT: Final[dict[str, Any]] = {
-    "valid": True,
-    "mode": "single",
-    "record_count": 1,
-    "valid_record_count": 1,
-    "invalid_record_count": 0,
-    "records": [_observation(0, "", "5001-1", valid=True)],
-    "issues": [],
-    "issue_count": 0,
-    "omitted_issue_count": 0,
-    "foreign_fields": [
-        {"path": "/source_metadata", "type": "object"},
-        {"path": "/annotations/SDrug/0/external_id", "type": "string"},
-    ],
-    "foreign_field_count": 2,
-    "omitted_foreign_field_count": 0,
-    "checks_not_performed": _NOT_PERFORMED,
-}
-
-
-def _invalid_batch_record() -> dict[str, Any]:
-    second: dict[str, Any] = {**EXAMPLE_RECORD, "case_id": "5002-1"}
-    second["annotations"] = {
-        "SDrug": EXAMPLE_RECORD["annotations"]["SDrug"],
-        "AE": [{"text": "Nausea", "start": 15, "end": 21}],
+def _report(mode: str, observations: list[dict[str, Any]], issues: list[Any]) -> dict[str, Any]:
+    valid_count = sum(1 for o in observations if o["valid"])
+    report: dict[str, Any] = {"valid": not issues, "mode": mode}
+    if issues:
+        report["error"] = {
+            "code": "INVALID_DOCUMENT",
+            "message": "One or more records are invalid.",
+        }
+    return report | {
+        "record_count": len(observations),
+        "valid_record_count": valid_count,
+        "invalid_record_count": len(observations) - valid_count,
+        "records": observations,
+        "issues": issues,
+        "issue_count": len(issues),
+        "omitted_issue_count": 0,
+        "foreign_fields": [],
+        "foreign_field_count": 0,
+        "omitted_foreign_field_count": 0,
+        "checks_not_performed": _NOT_PERFORMED,
     }
-    return second
 
 
-EXAMPLE_INVALID_BATCH: Final[dict[str, Any]] = {
-    "records": [EXAMPLE_RECORD, _invalid_batch_record()]
+EXAMPLE_SINGLE_REPORT: Final = _report(
+    "single", [_observation(0, "", "12345678-1", annotated=False)], []
+)
+EXAMPLE_ANNOTATED_REPORT: Final = _report(
+    "single", [_observation(0, "", "12345678-1", annotated=True)], []
+)
+
+EXAMPLE_VALID_BATCH: Final[dict[str, Any]] = {
+    "records": [EXAMPLE_RECORD, {**EXAMPLE_ANNOTATED_RECORD, "case_id": "12345679-1"}]
 }
-
-EXAMPLE_INVALID_BATCH_REPORT: Final[dict[str, Any]] = {
-    "valid": False,
-    "mode": "batch",
-    "error": {"code": "INVALID_DOCUMENT", "message": "One or more records are invalid."},
-    "record_count": 2,
-    "valid_record_count": 1,
-    "invalid_record_count": 1,
+EXAMPLE_INVALID_BATCH: Final[dict[str, Any]] = {
     "records": [
-        _observation(0, "/records/0", "5001-1", valid=True),
-        _observation(1, "/records/1", "5002-1", valid=False),
+        EXAMPLE_ANNOTATED_RECORD,
+        {
+            **EXAMPLE_RECORD,
+            "case_id": "12345679-1",
+            "annotations": {
+                "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
+                "AE": [{"text": "Nausea", "start": 15, "end": 21}],
+            },
+        },
+    ]
+}
+EXAMPLE_INVALID_BATCH_REPORT: Final = _report(
+    "batch",
+    [
+        _observation(0, "/records/0", "12345678-1", annotated=True),
+        _observation(1, "/records/1", "12345679-1", annotated=True, valid=False),
     ],
-    "issues": [
+    [
         {
             "location": "body",
             "path": "/records/1/annotations/AE/0/text",
@@ -138,18 +147,7 @@ EXAMPLE_INVALID_BATCH_REPORT: Final[dict[str, Any]] = {
             ),
         }
     ],
-    "issue_count": 1,
-    "omitted_issue_count": 0,
-    "foreign_fields": [
-        {"path": "/records/0/source_metadata", "type": "object"},
-        {"path": "/records/0/annotations/SDrug/0/external_id", "type": "string"},
-        {"path": "/records/1/source_metadata", "type": "object"},
-        {"path": "/records/1/annotations/SDrug/0/external_id", "type": "string"},
-    ],
-    "foreign_field_count": 4,
-    "omitted_foreign_field_count": 0,
-    "checks_not_performed": _NOT_PERFORMED,
-}
+)
 
 
 def _failure_example(mode: str, code: str, message: str, issues: list[Any]) -> dict[str, Any]:
@@ -208,6 +206,10 @@ _NO_STORE_HEADER: Final = {
 }
 
 _LIMITS_DESCRIPTION: Final = f"""
+**Minimal record:** `case_id`, `username`, and `narrative`. A narrative without annotations is
+the default submission. `annotations` (pre-existing spans) and `offset_unit` are optional; offsets
+are always Unicode code points, and each record observation reports the `offset_unit` used.
+
 **Wire rules enforced at runtime** (JSON Schema cannot express all of them):
 
 - `Content-Type: application/json`, optionally `charset=utf-8` (case-insensitive, may be quoted);
@@ -270,13 +272,19 @@ def operation_extra(mode: str) -> dict[str, Any]:
     single = mode == "single"
     if single:
         body_schema = _ref("Record")
-        body_examples = {"valid_record": EXAMPLE_RECORD}
-        ok_examples = {"valid_record": EXAMPLE_SINGLE_REPORT}
+        body_examples = {
+            "minimal_record": EXAMPLE_RECORD,
+            "annotated_record": EXAMPLE_ANNOTATED_RECORD,
+        }
+        ok_examples = {
+            "minimal_record": EXAMPLE_SINGLE_REPORT,
+            "annotated_record": EXAMPLE_ANNOTATED_REPORT,
+        }
         invalid_examples: dict[str, Any] = {"invalid_echo_option": example_invalid_options(mode)}
     else:
         body_schema = _ref("BatchEnvelope")
         body_examples = {
-            "valid_batch": {"records": [EXAMPLE_RECORD]},
+            "valid_batch": EXAMPLE_VALID_BATCH,
             "invalid_batch": EXAMPLE_INVALID_BATCH,
         }
         ok_examples = {}

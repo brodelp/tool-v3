@@ -1,0 +1,13 @@
+{
+  "case_id": "12345678-1",
+  "username": "demo_annotator",
+  "narrative": "Aspirin caused nausea.",
+  "annotations": {
+    "SDrug": [
+      {"text": "Aspirin", "start": 0, "end": 7}
+    ],
+    "AE": [
+      {"text": "nausea", "start": 15, "end": 21}
+    ]
+  }
+}
