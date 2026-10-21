@@ -45,8 +45,7 @@ def _ref(name: str) -> dict[str, str]:
 
 
 EXAMPLE_RECORD: Final[dict[str, Any]] = {
-    "project_id": 101,
-    "case_id": 5001,
+    "case_id": "5001-1",
     "username": "demo_annotator",
     "narrative": "Aspirin caused nausea.",
     "offset_unit": "unicode-code-point",
@@ -66,7 +65,7 @@ _ALL_PASSED: Final = dict.fromkeys(CHECKS, "passed")
 _NOT_PERFORMED: Final = list(CHECKS_NOT_PERFORMED)
 
 
-def _observation(index: int, path: str, case_id: int, *, valid: bool) -> dict[str, Any]:
+def _observation(index: int, path: str, case_id: str, *, valid: bool) -> dict[str, Any]:
     checks = dict(_ALL_PASSED)
     if not valid:
         checks["text_matches"] = "failed"
@@ -75,7 +74,6 @@ def _observation(index: int, path: str, case_id: int, *, valid: bool) -> dict[st
         "path": path,
         "valid": valid,
         "issue_count": 0 if valid else 1,
-        "project_id": 101,
         "case_id": case_id,
         "username": "demo_annotator",
         "narrative_code_points": 22,
@@ -91,7 +89,7 @@ EXAMPLE_SINGLE_REPORT: Final[dict[str, Any]] = {
     "record_count": 1,
     "valid_record_count": 1,
     "invalid_record_count": 0,
-    "records": [_observation(0, "", 5001, valid=True)],
+    "records": [_observation(0, "", "5001-1", valid=True)],
     "issues": [],
     "issue_count": 0,
     "omitted_issue_count": 0,
@@ -106,7 +104,7 @@ EXAMPLE_SINGLE_REPORT: Final[dict[str, Any]] = {
 
 
 def _invalid_batch_record() -> dict[str, Any]:
-    second: dict[str, Any] = {**EXAMPLE_RECORD, "case_id": 5002}
+    second: dict[str, Any] = {**EXAMPLE_RECORD, "case_id": "5002-1"}
     second["annotations"] = {
         "SDrug": EXAMPLE_RECORD["annotations"]["SDrug"],
         "AE": [{"text": "Nausea", "start": 15, "end": 21}],
@@ -126,8 +124,8 @@ EXAMPLE_INVALID_BATCH_REPORT: Final[dict[str, Any]] = {
     "valid_record_count": 1,
     "invalid_record_count": 1,
     "records": [
-        _observation(0, "/records/0", 5001, valid=True),
-        _observation(1, "/records/1", 5002, valid=False),
+        _observation(0, "/records/0", "5001-1", valid=True),
+        _observation(1, "/records/1", "5002-1", valid=False),
     ],
     "issues": [
         {
@@ -218,9 +216,10 @@ _LIMITS_DESCRIPTION: Final = f"""
   tolerated and counted. Container depth at most {MAX_JSON_DEPTH} (422 `LIMIT_EXCEEDED`).
   Duplicate decoded property names are 400 `DUPLICATE_PROPERTY`; malformed JSON and
   `NaN`/`Infinity` are 400 `INVALID_JSON`.
-- `project_id`, `case_id`, `start`, and `end` must be integer number tokens (no decimal point or
-  exponent). Every number anywhere in a record must have an exact value within
-  ±{MAX_SAFE_NUMBER}; strings and names must not contain U+0000 or unpaired surrogates.
+- `case_id` is a string `<case number>-<version>` (e.g. `12345678-1`), unique within a batch.
+  `start` and `end` must be integer number tokens (no decimal point or exponent). Every number
+  anywhere in a record must have an exact value within ±{MAX_SAFE_NUMBER}; strings and names
+  must not contain U+0000 or unpaired surrogates.
 - Annotation `text` must equal `narrative[start:end]` in Unicode code points with
   `0 <= start < end <= len(narrative)`. Within a record each `(label, text, start, end)` tuple
   may occur once; overlapping, nested, adjacent, and same-range different-label spans are valid.

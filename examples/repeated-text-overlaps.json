@@ -1,6 +1,5 @@
 {
-  "project_id": 101,
-  "case_id": 5010,
+  "case_id": "5010-1",
   "username": "demo_annotator",
   "narrative": "Aspirin and Aspirin.",
   "offset_unit": "unicode-code-point",

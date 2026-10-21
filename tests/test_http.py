@@ -218,7 +218,7 @@ def test_nonstandard_constants_are_invalid_json(token: str) -> None:
 )
 def test_extreme_exponents_with_safe_values_round_trip(token: str) -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"n",'
+        b'{"case_id":"1-1","username":"u","narrative":"n",'
         b'"offset_unit":"unicode-code-point","annotations":{},"x":' + token.encode() + b"}"
     )
     response = post_single(raw, query="echo=true")
@@ -228,7 +228,7 @@ def test_extreme_exponents_with_safe_values_round_trip(token: str) -> None:
 
 def test_large_exponent_with_huge_coefficient_is_unsafe_without_500() -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"n",'
+        b'{"case_id":"1-1","username":"u","narrative":"n",'
         b'"offset_unit":"unicode-code-point","annotations":{},"x":-'
         + b"9" * 6000
         + b"."
@@ -279,7 +279,7 @@ def test_decoder_failures_have_no_report(name: str) -> None:
 
 @pytest.mark.parametrize(
     "body",
-    [b"", b" \n", b'{"project_id": 1', b"{}{}", b"{} x", b"\xef\xbb\xbf", b'{"a": 1}\xef\xbb\xbf'],
+    [b"", b" \n", b'{"case_id": "1-1"', b"{}{}", b"{} x", b"\xef\xbb\xbf", b'{"a": 1}\xef\xbb\xbf'],
 )
 def test_empty_malformed_trailing_and_misplaced_bom(body: bytes) -> None:
     assert_request_failure(post_single(body), 400, "INVALID_JSON", 1)
@@ -444,7 +444,7 @@ def test_batch_depth_counts_envelope_and_records_array() -> None:
 
 
 def batch_of(count: int) -> bytes:
-    records = [make_record(case_id=i + 1) for i in range(count)]
+    records = [make_record(case_id=f"{i + 1}-1") for i in range(count)]
     return dumps({"records": records})
 
 
@@ -497,7 +497,7 @@ def test_non_object_entries_are_evaluated_slots() -> None:
         None,
         "x",
         [],
-        make_record(case_id=2, narrative="", annotations={}),
+        make_record(case_id="2-1", narrative="", annotations={}),
     ]
     response = post_batch(dumps({"records": records}))
     body = response.json()

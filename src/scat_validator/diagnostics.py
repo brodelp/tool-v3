@@ -27,14 +27,16 @@ class Msg:
     REQUIRED: Final = "This required property is missing."
     RECORD_OBJECT: Final = "A record must be a JSON object."
     BODY_OBJECT: Final = "The request body must be a JSON object."
-    ID_TYPE: Final = "Must be an integer number token without decimal point or exponent."
     STRING_TYPE: Final = "Must be a JSON string."
     MAP_TYPE: Final = "annotations must be a JSON object mapping label names to arrays."
     ARRAY_TYPE: Final = "Must be a JSON array of annotation objects."
     ANNOTATION_OBJECT: Final = "An annotation must be a JSON object."
     OFFSET_TYPE: Final = "Must be an integer number token without decimal point or exponent."
     RECORDS_TYPE: Final = "records must be a JSON array."
-    ID_RANGE: Final = "Must be an integer from 1 to 2147483647."
+    CASE_ID_EMPTY: Final = "case_id must not be empty or whitespace-only."
+    CASE_ID_SYNTAX: Final = (
+        "case_id must be <case number>-<version> in ASCII, at most 64 characters."
+    )
     USERNAME_EMPTY: Final = "username must not be empty or whitespace-only."
     NARRATIVE_EMPTY: Final = "narrative must contain at least one non-whitespace character."
     USERNAME_SYNTAX: Final = (
@@ -60,9 +62,7 @@ class Msg:
     DUPLICATE_ANNOTATION: Final = (
         "This (label, text, start, end) annotation repeats an earlier one in the record."
     )
-    DUPLICATE_RECORD: Final = (
-        "This (project_id, case_id) pair repeats an earlier record in the batch."
-    )
+    DUPLICATE_RECORD: Final = "This case_id repeats an earlier record in the batch."
     DEPTH: Final = "JSON containers must not be nested more than 128 levels deep."
     INVALID_JSON: Final = "The request body must be one valid UTF-8 JSON document."
     DUPLICATE_PROPERTY: Final = "Property names must be unique within each JSON object."

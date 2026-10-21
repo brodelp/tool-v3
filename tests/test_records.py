@@ -42,8 +42,7 @@ def raw_record(**replacements: str) -> bytes:
     text = example_bytes("valid-record.json").decode()
     for name, fragment in replacements.items():
         defaults = {
-            "project_id": '"project_id": 101',
-            "case_id": '"case_id": 5001',
+            "case_id": '"case_id": "5001-1"',
             "start": '"start": 0',
             "end": '"end": 7',
         }
@@ -55,7 +54,7 @@ def raw_record(**replacements: str) -> bytes:
 
 # ---------------------------------------------------------------- V02 missing / null / wrong types
 
-CORE = ["project_id", "case_id", "username", "narrative", "offset_unit", "annotations"]
+CORE = ["case_id", "username", "narrative", "offset_unit", "annotations"]
 
 
 @pytest.mark.parametrize("field", CORE)
@@ -82,9 +81,9 @@ def test_null_core_field_is_invalid_type_only(field: str) -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("project_id", "101"),
-        ("project_id", True),
-        ("project_id", [101]),
+        ("case_id", 5001),
+        ("case_id", True),
+        ("case_id", ["5001-1"]),
         ("case_id", {"id": 1}),
         ("username", 5),
         ("username", ["demo"]),
@@ -99,10 +98,10 @@ def test_wrong_core_types(field: str, value: Any) -> None:
     response = single(make_record(**{field: value}))
     assert issues_of(response) == [(f"/{field}", "INVALID_TYPE")]
     observation = response.json()["records"][0]
-    if field in ("project_id", "case_id", "username"):
+    if field in ("case_id", "username"):
         assert observation[field] is None
     # Independent observations remain available.
-    others = {"project_id": 101, "case_id": 5001, "username": "demo_annotator"}
+    others = {"case_id": "5001-1", "username": "demo_annotator"}
     for name, expected in others.items():
         if name != field:
             assert observation[name] == expected
@@ -187,60 +186,116 @@ def test_non_object_single_body_fails_gate_five() -> None:
 
 
 def test_independent_issues_are_all_reported() -> None:
-    record = make_record(project_id=0, username="", narrative="   ", offset_unit="utf-16")
+    record = make_record(case_id="5001", username="", narrative="   ", offset_unit="utf-16")
     record["annotations"]["AE"][0]["start"] = "15"
     response = single(record)
     assert issues_of(response) == [
         ("/annotations/AE/0/start", "INVALID_TYPE"),
-        ("/project_id", "INVALID_ID"),
+        ("/case_id", "INVALID_ID"),
         ("/username", "EMPTY_VALUE"),
         ("/narrative", "EMPTY_VALUE"),
         ("/offset_unit", "INVALID_OFFSET_UNIT"),
     ]
     observation = response.json()["records"][0]
-    assert observation["project_id"] is None
-    assert observation["case_id"] == 5001
+    assert observation["case_id"] is None
+    assert observation["username"] is None
     assert observation["narrative_code_points"] == 3
 
 
-# ---------------------------------------------------------------- V03 strict integers
+# ---------------------------------------------------------------- V03 case_id and strict offsets
 
 
-@pytest.mark.parametrize("value", ["1", "2147483647"])
-def test_id_bounds_pass(value: str) -> None:
-    for field in ("project_id", "case_id"):
-        response = post_single(raw_record(**{field: value}))
-        assert response.status == 200
-        assert response.json()["records"][0][field] == int(value)
+@pytest.mark.parametrize(
+    "value", ["12345678-1", "5001-1", "A1-0", "ab.c_d-12", "0-007", "a" * 62 + "-1"]
+)
+def test_case_id_valid_spellings(value: str) -> None:
+    response = single(make_record(case_id=value))
+    assert response.status == 200
+    # Preserved exactly; leading zeros are not interpreted.
+    assert response.json()["records"][0]["case_id"] == value
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "2147483648", "-0", "9007199254740991"])
-def test_id_out_of_range(value: str) -> None:
-    for field in ("project_id", "case_id"):
-        response = post_single(raw_record(**{field: value}))
-        assert issues_of(response) == [(f"/{field}", "INVALID_ID")]
-        assert response.json()["records"][0][field] is None
-        assert checks_of(response)["record_identity_uniqueness"] == "skipped"
+@pytest.mark.parametrize(
+    "value",
+    [
+        "12345678",
+        "-1",
+        "1-",
+        "1-2-3",
+        "1--2",
+        "1 -2",
+        " 12345678-1",
+        "12345678-1 ",
+        "12345678-1\n",
+        "12345678-v1",
+        ".a-1",
+        "a.-1",
+        "a/b-1",
+        "é-1",
+        "\uff11\uff12-1",  # fullwidth digits
+        "a" * 63 + "-1",
+    ],
+)
+def test_case_id_invalid_syntax(value: str) -> None:
+    response = single(make_record(case_id=value))
+    assert issues_of(response) == [("/case_id", "INVALID_ID")]
+    assert response.json()["records"][0]["case_id"] is None
+    assert checks_of(response) == with_checks(
+        field_values="failed", record_identity_uniqueness="skipped"
+    )
 
 
-@pytest.mark.parametrize("value", ["true", "false", '"1"', "1.0", "1e0", "1E0", "101.0", "null"])
-def test_non_integer_token_ids_are_invalid_type(value: str) -> None:
-    for field in ("project_id", "case_id"):
-        response = post_single(raw_record(**{field: value}))
-        assert issues_of(response) == [(f"/{field}", "INVALID_TYPE")]
+@pytest.mark.parametrize("value", ["", " ", "\t\n"])
+def test_case_id_empty_or_whitespace(value: str) -> None:
+    response = single(make_record(case_id=value))
+    assert issues_of(response) == [("/case_id", "EMPTY_VALUE")]
 
 
-@pytest.mark.parametrize("value", ["9007199254740992", "1e400", "-1e400", "9" * 4301])
-def test_unsafe_id_is_reported_once_by_json_values(value: str) -> None:
-    response = post_single(raw_record(project_id=value))
+@pytest.mark.parametrize("value", ["5001", "1", "true", "1.0", "1e0", "null", "[]", "{}"])
+def test_non_string_case_ids_are_invalid_type(value: str) -> None:
+    # Legacy numeric identifiers are rejected without coercion to strings.
+    response = post_single(raw_record(case_id=value))
+    assert issues_of(response) == [("/case_id", "INVALID_TYPE")]
+    assert response.json()["records"][0]["case_id"] is None
+    assert checks_of(response)["record_identity_uniqueness"] == "skipped"
+
+
+@pytest.mark.parametrize(
+    ("value", "code"),
+    [
+        ("1e400", "UNSAFE_NUMBER"),
+        ("9" * 4301, "UNSAFE_NUMBER"),
+        ('"\\u0000-1"', "UNSUPPORTED_UNICODE"),
+    ],
+)
+def test_rejected_case_id_is_reported_once_by_json_values(value: str, code: str) -> None:
+    response = post_single(raw_record(case_id=value))
     assert response.status == 422
-    assert issues_of(response) == [("/project_id", "UNSAFE_NUMBER")]
+    assert issues_of(response) == [("/case_id", code)]
     assert checks_of(response) == with_checks(
         json_values="failed",
         field_types="skipped",
         field_values="skipped",
         record_identity_uniqueness="skipped",
     )
+
+
+@pytest.mark.parametrize("value", [101, 0, -1, "101", None])
+def test_project_id_is_foreign_metadata(value: Any) -> None:
+    # project_id is no longer owned: any value is opaque metadata, preserved and inventoried.
+    record = make_record(project_id=value)
+    response = post_single(dumps(record), query="echo=true")
+    assert response.status == 200
+    body = response.json()
+    assert "project_id" not in body["records"][0]
+    assert {"path": "/project_id", "type": json_type(value)} in body["foreign_fields"]
+    assert body["echo"]["project_id"] == value
+
+
+def json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    return "string" if isinstance(value, str) else "number"
 
 
 @pytest.mark.parametrize("value", ["true", '"0"', "0.0", "0e0", "null"])
@@ -468,7 +523,7 @@ def test_composed_and_decomposed_forms_are_not_normalized() -> None:
 
 def test_escaped_surrogate_pair_is_one_code_point() -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"x\\ud83d\\ude00",'
+        b'{"case_id":"1-1","username":"u","narrative":"x\\ud83d\\ude00",'
         b'"offset_unit":"unicode-code-point","annotations":{"AE":[{"text":"\\ud83d\\ude00",'
         b'"start":1,"end":2}]}}'
     )
@@ -588,7 +643,7 @@ def test_duplicates_independent_of_range_and_quote_validity() -> None:
 
 def test_no_cross_record_annotation_duplicates() -> None:
     first = make_record()
-    second = make_record(case_id=5002)
+    second = make_record(case_id="5002-1")
     assert post_batch(dumps({"records": [first, second]})).status == 200
 
 
@@ -667,7 +722,7 @@ def test_unsupported_names_fall_back_to_enclosing_object() -> None:
 
 def test_unsupported_label_name_is_reported_once() -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"abc",'
+        b'{"case_id":"1-1","username":"u","narrative":"abc",'
         b'"offset_unit":"unicode-code-point","annotations":{"\\ud800":[{"text":"a","start":0,'
         b'"end":1,"m":1}]}}'
     )
@@ -692,7 +747,7 @@ def test_non_object_record_json_values_still_evaluated() -> None:
         ("/records/2", "INVALID_TYPE"),
     ]
     for observation in response.json()["records"]:
-        assert observation["project_id"] is None
+        assert observation["case_id"] is None
         assert observation["annotation_count"] is None
         assert observation["checks"]["field_types"] == "failed"
         assert observation["checks"]["required_fields"] == "skipped"
@@ -779,7 +834,7 @@ def test_counts_include_malformed_slots_and_skip_zero_labels() -> None:
 
 def test_canonical_label_order_in_counts_regardless_of_input_order() -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"abc",'
+        b'{"case_id":"1-1","username":"u","narrative":"abc",'
         b'"offset_unit":"unicode-code-point","annotations":{"Temporal":[{"text":"a","start":0,'
         b'"end":1}],"SDrug":[{"text":"b","start":1,"end":2}],"Age":[{"text":"c","start":2,"end":3}]}}'
     )
@@ -788,11 +843,13 @@ def test_canonical_label_order_in_counts_regardless_of_input_order() -> None:
 
 
 def test_identity_fields_validate_independently() -> None:
-    response = single(make_record(case_id=0, username="bad user", narrative=None))
+    response = single(make_record(username="bad user", narrative=None))
     observation = response.json()["records"][0]
-    assert observation["project_id"] == 101
-    assert observation["case_id"] is None
+    assert observation["case_id"] == "5001-1"
     assert observation["username"] is None
+    other = single(make_record(case_id="5001", narrative=None)).json()["records"][0]
+    assert other["case_id"] is None
+    assert other["username"] == "demo_annotator"
     assert observation["narrative_code_points"] is None
     assert observation["valid"] is False
 
@@ -821,7 +878,7 @@ def test_rejected_scalar_in_container_slot_still_fails_shape(
     fragment: str, expected: list[tuple[str, str]]
 ) -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"abc",'
+        b'{"case_id":"1-1","username":"u","narrative":"abc",'
         b'"offset_unit":"unicode-code-point","annotations":{' + fragment.encode() + b"}}"
     )
     response = post_single(raw)
@@ -831,7 +888,7 @@ def test_rejected_scalar_in_container_slot_still_fails_shape(
 
 def test_rejected_scalar_as_annotations_map_or_record_still_fails_shape() -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"abc",'
+        b'{"case_id":"1-1","username":"u","narrative":"abc",'
         b'"offset_unit":"unicode-code-point","annotations":1e400}'
     )
     assert issues_of(post_single(raw)) == [
@@ -846,7 +903,7 @@ def test_rejected_scalar_as_annotations_map_or_record_still_fails_shape() -> Non
 
 def test_forbidden_label_with_non_array_value() -> None:
     raw = (
-        b'{"project_id":1,"case_id":1,"username":"u","narrative":"abc",'
+        b'{"case_id":"1-1","username":"u","narrative":"abc",'
         b'"offset_unit":"unicode-code-point","annotations":{"AE\\ud800":5}}'
     )
     issues = post_single(raw).json()["issues"]

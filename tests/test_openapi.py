@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from scat_validator.config import LABELS, MAX_SAFE_NUMBER
 from scat_validator.contracts import (
+    CASE_ID_PATTERN,
     REQUEST_FAILURE_ADAPTER,
     VALIDATION_REPORT_ADAPTER,
     BatchEnvelope,
@@ -111,22 +112,17 @@ def test_record_schema(spec: dict[str, Any]) -> None:
     record = schemas(spec)["Record"]
     assert record["additionalProperties"] is True
     assert record["required"] == [
-        "project_id",
         "case_id",
         "username",
         "narrative",
         "offset_unit",
         "annotations",
     ]
-    for field in ("project_id", "case_id"):
-        prop = record["properties"][field]
-        assert (prop["type"], prop["format"], prop["minimum"], prop["maximum"]) == (
-            "integer",
-            "int32",
-            1,
-            2147483647,
-        )
-        assert "decimal point or exponent" in prop["description"]
+    assert "project_id" not in record["properties"]
+    case_id = record["properties"]["case_id"]
+    assert (case_id["type"], case_id["minLength"], case_id["maxLength"]) == ("string", 1, 64)
+    assert case_id["pattern"] == CASE_ID_PATTERN
+    assert case_id["examples"] == ["12345678-1"]
     username = record["properties"]["username"]
     assert username["maxLength"] == 255
     assert "format" not in username
@@ -186,8 +182,9 @@ def test_response_variants(spec: dict[str, Any]) -> None:
     status_enum = schemas(spec)["CheckStatus"]["enum"]
     assert status_enum == ["passed", "failed", "skipped"]
     observation = schemas(spec)["RecordObservation"]
-    assert len(observation["required"]) == 11
-    for nullable in ("project_id", "case_id", "username", "annotation_count"):
+    assert len(observation["required"]) == 10
+    assert "project_id" not in observation["properties"]
+    for nullable in ("case_id", "username", "annotation_count"):
         types = [branch.get("type") for branch in observation["properties"][nullable]["anyOf"]]
         assert "null" in types
     issue = schemas(spec)["Issue"]
@@ -300,7 +297,9 @@ def test_request_models_agree_with_runtime_on_reference_fixtures() -> None:
     with pytest.raises(ValidationError):
         Record.model_validate_json(dumps({**EXAMPLE_RECORD, "annotations": {"ae": []}}))
     with pytest.raises(ValidationError):
-        Record.model_validate_json(dumps({**EXAMPLE_RECORD, "project_id": 0}))
+        Record.model_validate_json(dumps({**EXAMPLE_RECORD, "case_id": 5001}))
+    with pytest.raises(ValidationError):
+        Record.model_validate_json(dumps({**EXAMPLE_RECORD, "case_id": "5001"}))
     with pytest.raises(ValidationError):
         BatchEnvelope.model_validate_json(dumps({"records": [EXAMPLE_RECORD], "extra": 1}))
 

@@ -41,7 +41,7 @@ def assert_bounded(response: RawResponse) -> None:
 
 
 def test_valid_non_object_and_invalid_records_all_observed() -> None:
-    invalid = make_record(case_id=3, username="", offset_unit="bad")
+    invalid = make_record(case_id="3-1", username="", offset_unit="bad")
     response = batch(make_record(), "not a record", invalid)
     body = response.json()
     assert response.status == 422
@@ -52,9 +52,9 @@ def test_valid_non_object_and_invalid_records_all_observed() -> None:
     assert "echo" not in body
 
 
-def test_later_repeated_pairs_fail_even_when_earlier_record_is_otherwise_invalid() -> None:
+def test_later_repeated_case_ids_fail_even_when_earlier_record_is_otherwise_invalid() -> None:
     first = make_record(narrative=MISSING)
-    response = batch(first, make_record(), make_record(), make_record(case_id=5002))
+    response = batch(first, make_record(), make_record(), make_record(case_id="5002-1"))
     assert issues_of(response) == [
         ("/records/0/narrative", "REQUIRED_FIELD"),
         ("/records/1", "DUPLICATE_RECORD"),
@@ -75,8 +75,9 @@ def test_invalid_or_missing_ids_skip_uniqueness() -> None:
     response = batch(
         make_record(case_id=0),
         make_record(case_id=0),
-        make_record(project_id=MISSING),
-        make_record(project_id=MISSING),
+        make_record(case_id=MISSING),
+        make_record(case_id=MISSING),
+        make_record(case_id="5001"),
         make_record(case_id="5001"),
     )
     codes = [code for _, code in issues_of(response)]
@@ -87,19 +88,26 @@ def test_invalid_or_missing_ids_skip_uniqueness() -> None:
     assert batch(make_record(case_id=0), make_record()).json()["records"][1]["valid"] is True
 
 
-def test_same_project_or_same_case_alone_is_allowed() -> None:
+def test_distinct_case_ids_pass() -> None:
+    # Identity is the exact case_id string: another version or another spelling is distinct.
     response = batch(
         make_record(),
-        make_record(case_id=5002),
-        make_record(project_id=202),
-        make_record(project_id=202, case_id=5002),
+        make_record(case_id="5002-1"),
+        make_record(case_id="5001-2"),
+        make_record(case_id="5001-01"),
+        make_record(project_id=1),
     )
-    assert response.status == 200
+    assert issues_of(response) == [("/records/4", "DUPLICATE_RECORD")]
+    assert [r["valid"] for r in response.json()["records"]] == [True, True, True, True, False]
 
 
-def test_repeated_pair_detected_after_issue_cap() -> None:
-    noisy = make_record(case_id=1, annotations={f"Bad{i}": [] for i in range(25)})
-    records = [noisy] + [make_record(case_id=10 + i) for i in range(97)] + [make_record(case_id=10)]
+def test_repeated_case_id_detected_after_issue_cap() -> None:
+    noisy = make_record(case_id="1-1", annotations={f"Bad{i}": [] for i in range(25)})
+    records = (
+        [noisy]
+        + [make_record(case_id=f"{10 + i}-1") for i in range(97)]
+        + [make_record(case_id="10-1")]
+    )
     response = batch(*records)
     body = response.json()
     assert len(body["issues"]) == 20
@@ -118,8 +126,8 @@ def test_repetitions_across_requests_pass() -> None:
 
 
 def test_issue_cap_with_exact_totals_and_per_record_counts() -> None:
-    first = make_record(case_id=1, annotations={f"X{i:02}": [] for i in range(15)})
-    second = make_record(case_id=2, annotations={f"Y{i:02}": [] for i in range(15)})
+    first = make_record(case_id="1-1", annotations={f"X{i:02}": [] for i in range(15)})
+    second = make_record(case_id="2-1", annotations={f"Y{i:02}": [] for i in range(15)})
     response = batch(first, second)
     body = response.json()
     assert body["issue_count"] == 30
@@ -159,7 +167,7 @@ def test_inventory_order_records_labels_annotations_names() -> None:
         Zed=1,
         alpha=2,
     )
-    other = make_record(case_id=2, annotations={}, beta=None)
+    other = make_record(case_id="2-1", annotations={}, beta=None)
     response = batch(record, other)
     paths = [f["path"] for f in response.json()["foreign_fields"]]
     assert paths == [
@@ -189,7 +197,7 @@ def shuffled(value: Any, rng: random.Random) -> Any:
 
 def test_reordering_object_keys_preserves_findings_and_order() -> None:
     record = make_record(
-        project_id=0,
+        case_id="bad",
         username="bad name",
         meta={"z": "\u0000", "a": [1, "\ud800"], "m": {"q": "\u0000", "b": 1}},
         annotations={
@@ -408,7 +416,7 @@ def test_batch_prefix_counts_toward_pointer_limit() -> None:
     name = name_with_pointer_bytes(1024 - len("/records/0"))
     record = make_record(annotations={})
     record[name] = None
-    longer = make_record(case_id=2, annotations={})
+    longer = make_record(case_id="2-1", annotations={})
     longer[name + "a"] = None
     paths = [f["path"] for f in batch(record, longer).json()["foreign_fields"]]
     assert any(len(p.encode()) == 1024 for p in paths)

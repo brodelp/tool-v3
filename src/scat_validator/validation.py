@@ -21,7 +21,7 @@ from scat_validator.config import (
     OFFSET_UNIT,
     RECORD_FIELDS,
 )
-from scat_validator.contracts import Checks, IssueCode, is_valid_id, is_valid_offset_unit
+from scat_validator.contracts import Checks, IssueCode, is_valid_case_id, is_valid_offset_unit
 from scat_validator.diagnostics import CheckTracker, InventoryCollector, IssueCollector, Msg
 from scat_validator.paths import PathNode
 from scat_validator.wire import JsonNumber, JsonValue, contains_forbidden_code_point
@@ -33,24 +33,31 @@ _ALNUM: Final = re.compile(r"[A-Za-z0-9]")
 _PRINTABLE_ASCII: Final = re.compile(r"[\x21-\x7e]+")
 
 
-class UsernameProblem(Enum):
+class ValueProblem(Enum):
     EMPTY = auto()
     INVALID = auto()
 
 
-def username_problem(value: str) -> UsernameProblem | None:
+def case_id_problem(value: str) -> ValueProblem | None:
+    """Classify a Unicode-compatible case_id string without modifying it (spec §3.1)."""
+    if not value or value.isspace():
+        return ValueProblem.EMPTY
+    return None if is_valid_case_id(value) else ValueProblem.INVALID
+
+
+def username_problem(value: str) -> ValueProblem | None:
     """Classify a Unicode-compatible username string without modifying it."""
     if not value or value.isspace():
-        return UsernameProblem.EMPTY
+        return ValueProblem.EMPTY
     if len(value) > MAX_USERNAME_CHARS:
-        return UsernameProblem.INVALID
+        return ValueProblem.INVALID
     if "@" not in value:
         if _HANDLE.fullmatch(value) and _ALNUM.search(value):
             return None
-        return UsernameProblem.INVALID
+        return ValueProblem.INVALID
     # Rejects whitespace, controls, and all non-ASCII before the email parser sees the value.
     if not _PRINTABLE_ASCII.fullmatch(value):
-        return UsernameProblem.INVALID
+        return ValueProblem.INVALID
     try:
         validate_email(
             value,
@@ -65,7 +72,7 @@ def username_problem(value: str) -> UsernameProblem | None:
             # (e.g. .local, .arpa) and dotless domains; see docs/implementation-decisions.md.
         )
     except ValueError:  # EmailNotValidError and codec errors
-        return UsernameProblem.INVALID
+        return ValueProblem.INVALID
     # The normalized result is discarded; the submitted value is retained unchanged.
     return None
 
@@ -123,8 +130,7 @@ def _classify(obj: dict[str, JsonValue], name: str, *, kind: str) -> Slot:
 
 
 _RECORD_KINDS: Final = {
-    "project_id": "int",
-    "case_id": "int",
+    "case_id": "str",
     "username": "str",
     "narrative": "str",
     "offset_unit": "str",
@@ -133,8 +139,7 @@ _RECORD_KINDS: Final = {
 _ANNOTATION_KINDS: Final = {"text": "str", "start": "int", "end": "int"}
 
 _TYPE_MESSAGES: Final = {
-    "project_id": Msg.ID_TYPE,
-    "case_id": Msg.ID_TYPE,
+    "case_id": Msg.STRING_TYPE,
     "username": Msg.STRING_TYPE,
     "narrative": Msg.STRING_TYPE,
     "offset_unit": Msg.STRING_TYPE,
@@ -171,8 +176,7 @@ class _LabelEntry:
 class RecordResult:
     issue_count: int
     checks: Checks
-    project_id: int | None
-    case_id: int | None
+    case_id: str | None
     username: str | None
     narrative_code_points: int | None
     annotation_count: int | None
@@ -197,7 +201,7 @@ class _RecordValidator:
         node: PathNode,
         issues: IssueCollector,
         inventory: InventoryCollector,
-        seen_identities: set[tuple[int, int]],
+        seen_identities: set[str],
     ) -> None:
         self.value = value
         self.node = node
@@ -230,26 +234,25 @@ class _RecordValidator:
                 "annotation_duplicates",
                 "record_identity_uniqueness",
             )
-            return self._result(None, None, None, None, None, None)
+            return self._result(None, None, None, None, None)
 
         slots = {name: _classify(record, name, kind=kind) for name, kind in _RECORD_KINDS.items()}
         entries = self._label_entries(record, slots)
 
         self._required_fields(record, slots, entries)
         self._field_types(slots, entries)
-        project_id, case_id, username = self._field_values(record, slots)
+        case_id, username = self._field_values(record, slots)
         self._label_membership(entries)
         narrative = record["narrative"] if slots["narrative"] is Slot.OK else None
         assert narrative is None or isinstance(narrative, str)
         self._offset_ranges(record, slots, narrative, entries)
         self._text_matches(narrative, entries)
         self._annotation_duplicates(entries)
-        self._identity_uniqueness(project_id, case_id)
+        self._identity_uniqueness(case_id)
         self._inventory(record, entries)
 
         counts = self._annotation_counts(entries)
         return self._result(
-            project_id,
             case_id,
             username,
             None if narrative is None else len(narrative),
@@ -259,8 +262,7 @@ class _RecordValidator:
 
     def _result(
         self,
-        project_id: int | None,
-        case_id: int | None,
+        case_id: str | None,
         username: str | None,
         narrative_code_points: int | None,
         annotation_count: int | None,
@@ -269,7 +271,6 @@ class _RecordValidator:
         return RecordResult(
             issue_count=self.issue_count,
             checks=self.tracker.as_checks(),
-            project_id=project_id,
             case_id=case_id,
             username=username,
             narrative_code_points=narrative_code_points,
@@ -414,31 +415,30 @@ class _RecordValidator:
 
     def _field_values(
         self, record: dict[str, JsonValue], slots: dict[str, Slot]
-    ) -> tuple[int | None, int | None, str | None]:
+    ) -> tuple[str | None, str | None]:
         check = "field_values"
-        ids: dict[str, int | None] = {}
-        for name in ("project_id", "case_id"):
-            ids[name] = None
-            if slots[name] is not Slot.OK:
-                self.tracker.block(check)
-                continue
-            token = record[name]
-            assert isinstance(token, JsonNumber)
-            number = token.safe_int()
-            assert number is not None
-            if is_valid_id(number):
-                ids[name] = number
+        case_id: str | None = None
+        if slots["case_id"] is Slot.OK:
+            value = record["case_id"]
+            assert isinstance(value, str)
+            problem = case_id_problem(value)
+            if problem is ValueProblem.EMPTY:
+                self.issue(check, self.node.child("case_id"), "EMPTY_VALUE", Msg.CASE_ID_EMPTY)
+            elif problem is ValueProblem.INVALID:
+                self.issue(check, self.node.child("case_id"), "INVALID_ID", Msg.CASE_ID_SYNTAX)
             else:
-                self.issue(check, self.node.child(name), "INVALID_ID", Msg.ID_RANGE)
+                case_id = value
+        else:
+            self.tracker.block(check)
 
         username: str | None = None
         if slots["username"] is Slot.OK:
             value = record["username"]
             assert isinstance(value, str)
             problem = username_problem(value)
-            if problem is UsernameProblem.EMPTY:
+            if problem is ValueProblem.EMPTY:
                 self.issue(check, self.node.child("username"), "EMPTY_VALUE", Msg.USERNAME_EMPTY)
-            elif problem is UsernameProblem.INVALID:
+            elif problem is ValueProblem.INVALID:
                 self.issue(
                     check, self.node.child("username"), "INVALID_USERNAME", Msg.USERNAME_SYNTAX
                 )
@@ -464,7 +464,7 @@ class _RecordValidator:
                 )
         else:
             self.tracker.block(check)
-        return ids["project_id"], ids["case_id"], username
+        return case_id, username
 
     # -------------------------------------------------------------- label_membership
 
@@ -553,16 +553,16 @@ class _RecordValidator:
 
     # -------------------------------------------------------------- record_identity_uniqueness
 
-    def _identity_uniqueness(self, project_id: int | None, case_id: int | None) -> None:
+    def _identity_uniqueness(self, case_id: str | None) -> None:
         check = "record_identity_uniqueness"
-        if project_id is None or case_id is None:
+        if case_id is None:
             self.tracker.block(check)
             return
-        pair = (project_id, case_id)
-        if pair in self.seen_identities:
+        # Exact string comparison: "5-01" and "5-1" are different identifiers.
+        if case_id in self.seen_identities:
             self.issue(check, self.node, "DUPLICATE_RECORD", Msg.DUPLICATE_RECORD)
         else:
-            self.seen_identities.add(pair)
+            self.seen_identities.add(case_id)
 
     # -------------------------------------------------------------- inventory and counts
 
@@ -608,11 +608,11 @@ def validate_record(
     node: PathNode,
     issues: IssueCollector,
     inventory: InventoryCollector,
-    seen_identities: set[tuple[int, int]],
+    seen_identities: set[str],
 ) -> RecordResult:
     """Validate one record slot.
 
     ``seen_identities`` is request-local: pass an empty set for a single record, or share one
-    set across a batch so later repeated (project_id, case_id) pairs fail.
+    set across a batch so later repeated case_id values fail.
     """
     return _RecordValidator(value, node, issues, inventory, seen_identities).run()

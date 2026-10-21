@@ -15,7 +15,7 @@ from scat_validator.http_gates import (
 from scat_validator.paths import PathNode, render
 from scat_validator.validation import (
     RecordResult,
-    UsernameProblem,
+    ValueProblem,
     username_problem,
     validate_record,
 )
@@ -50,7 +50,7 @@ def test_validation_module_has_no_http_dependency() -> None:
 
 def test_shared_identity_set_is_request_local() -> None:
     raw = decode_document(example_bytes("valid-record.json")).value
-    seen: set[tuple[int, int]] = set()
+    seen: set[str] = set()
     issues, inventory = IssueCollector(), InventoryCollector()
     first = validate_record(raw, PathNode.root(), issues, inventory, seen)
     second = validate_record(raw, PathNode.root(), issues, inventory, seen)
@@ -103,15 +103,15 @@ def test_path_lengths_are_computed_once_per_node() -> None:
         ("demo_annotator", None),
         ("Brandon.Penny+review@example.com", None),
         ("o'brien@example.com", None),
-        ("", UsernameProblem.EMPTY),
-        ("　", UsernameProblem.EMPTY),
-        ("._+-", UsernameProblem.INVALID),
-        ("a" * 256, UsernameProblem.INVALID),
-        ("a\u00a0b", UsernameProblem.INVALID),
-        ("é@example.com", UsernameProblem.INVALID),
+        ("", ValueProblem.EMPTY),
+        ("　", ValueProblem.EMPTY),
+        ("._+-", ValueProblem.INVALID),
+        ("a" * 256, ValueProblem.INVALID),
+        ("a\u00a0b", ValueProblem.INVALID),
+        ("é@example.com", ValueProblem.INVALID),
     ],
 )
-def test_username_profile(value: str, problem: UsernameProblem | None) -> None:
+def test_username_profile(value: str, problem: ValueProblem | None) -> None:
     assert username_problem(value) is problem
 
 

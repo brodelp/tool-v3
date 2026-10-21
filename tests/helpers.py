@@ -125,8 +125,7 @@ def raw_fixture(name: str) -> bytes:
 
 
 BASE_RECORD: dict[str, Any] = {
-    "project_id": 101,
-    "case_id": 5001,
+    "case_id": "5001-1",
     "username": "demo_annotator",
     "narrative": "Aspirin caused nausea.",
     "offset_unit": "unicode-code-point",

@@ -130,7 +130,7 @@ def build_report(mode: Mode, slots: Sequence[tuple[JsonValue, PathNode]]) -> Val
     """Evaluate every record slot with the shared validator and assemble the report."""
     issues = IssueCollector()
     inventory = InventoryCollector()
-    seen_identities: set[tuple[int, int]] = set()
+    seen_identities: set[str] = set()
     observations: list[RecordObservation] = []
     for index, (value, node) in enumerate(slots):
         result = validate_record(value, node, issues, inventory, seen_identities)
@@ -140,7 +140,6 @@ def build_report(mode: Mode, slots: Sequence[tuple[JsonValue, PathNode]]) -> Val
                 "path": "" if mode == "single" else f"/records/{index}",
                 "valid": result.valid,
                 "issue_count": result.issue_count,
-                "project_id": result.project_id,
                 "case_id": result.case_id,
                 "username": result.username,
                 "narrative_code_points": result.narrative_code_points,
