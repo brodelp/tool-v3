@@ -143,6 +143,7 @@ def build_report(mode: Mode, slots: Sequence[tuple[JsonValue, PathNode]]) -> Val
                 "case_id": result.case_id,
                 "username": result.username,
                 "narrative_code_points": result.narrative_code_points,
+                "offset_unit": result.offset_unit,
                 "annotation_count": result.annotation_count,
                 "annotations_by_label": result.annotations_by_label,
                 "checks": result.checks,

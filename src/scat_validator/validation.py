@@ -20,8 +20,15 @@ from scat_validator.config import (
     MAX_USERNAME_CHARS,
     OFFSET_UNIT,
     RECORD_FIELDS,
+    REQUIRED_RECORD_FIELDS,
 )
-from scat_validator.contracts import Checks, IssueCode, is_valid_case_id, is_valid_offset_unit
+from scat_validator.contracts import (
+    Checks,
+    IssueCode,
+    OffsetUnit,
+    is_valid_case_id,
+    is_valid_offset_unit,
+)
 from scat_validator.diagnostics import CheckTracker, InventoryCollector, IssueCollector, Msg
 from scat_validator.paths import PathNode
 from scat_validator.wire import JsonNumber, JsonValue, contains_forbidden_code_point
@@ -179,6 +186,7 @@ class RecordResult:
     case_id: str | None
     username: str | None
     narrative_code_points: int | None
+    offset_unit: OffsetUnit | None
     annotation_count: int | None
     annotations_by_label: dict[str, int] | None
 
@@ -234,7 +242,7 @@ class _RecordValidator:
                 "annotation_duplicates",
                 "record_identity_uniqueness",
             )
-            return self._result(None, None, None, None, None)
+            return self._result(None, None, None, None, None, None)
 
         slots = {name: _classify(record, name, kind=kind) for name, kind in _RECORD_KINDS.items()}
         entries = self._label_entries(record, slots)
@@ -256,6 +264,7 @@ class _RecordValidator:
             case_id,
             username,
             None if narrative is None else len(narrative),
+            OFFSET_UNIT if self._offset_unit_ok(record, slots) else None,
             None if counts is None else sum(counts.values()),
             None if counts is None else {label: n for label, n in counts.items() if n},
         )
@@ -265,6 +274,7 @@ class _RecordValidator:
         case_id: str | None,
         username: str | None,
         narrative_code_points: int | None,
+        offset_unit: OffsetUnit | None,
         annotation_count: int | None,
         annotations_by_label: dict[str, int] | None,
     ) -> RecordResult:
@@ -274,13 +284,24 @@ class _RecordValidator:
             case_id=case_id,
             username=username,
             narrative_code_points=narrative_code_points,
+            offset_unit=offset_unit,
             annotation_count=annotation_count,
             annotations_by_label=annotations_by_label,
         )
 
+    @staticmethod
+    def _offset_unit_ok(record: dict[str, JsonValue], slots: dict[str, Slot]) -> bool:
+        """An absent unit means Unicode code points; a supplied one must say so exactly."""
+        slot = slots["offset_unit"]
+        return slot is Slot.MISSING or (slot is Slot.OK and record["offset_unit"] == OFFSET_UNIT)
+
     def _label_entries(
         self, record: dict[str, JsonValue], slots: dict[str, Slot]
     ) -> list[_LabelEntry] | None:
+        """Label entries in check order; ``[]`` when the optional map is absent (no annotations),
+        ``None`` when a supplied map is not an object."""
+        if slots["annotations"] is Slot.MISSING:
+            return []
         if slots["annotations"] is not Slot.OK:
             return None
         annotations = record["annotations"]
@@ -370,7 +391,7 @@ class _RecordValidator:
         entries: list[_LabelEntry] | None,
     ) -> None:
         check = "required_fields"
-        for name in RECORD_FIELDS:
+        for name in REQUIRED_RECORD_FIELDS:
             if slots[name] is Slot.MISSING:
                 self.issue(check, self.node.child(name), "REQUIRED_FIELD", Msg.REQUIRED)
         if entries is None:
@@ -395,6 +416,8 @@ class _RecordValidator:
 
     def _field_types(self, slots: dict[str, Slot], entries: list[_LabelEntry] | None) -> None:
         for name in RECORD_FIELDS:
+            if slots[name] is Slot.MISSING and name not in REQUIRED_RECORD_FIELDS:
+                continue  # an absent optional field has nothing to type-check
             self._type_slot(slots[name], self.node.child(name), _TYPE_MESSAGES[name])
         if entries is None:
             if slots["annotations"] is not Slot.WRONG_TYPE:
@@ -462,7 +485,7 @@ class _RecordValidator:
                 self.issue(
                     check, self.node.child("offset_unit"), "INVALID_OFFSET_UNIT", Msg.OFFSET_UNIT
                 )
-        else:
+        elif slots["offset_unit"] is not Slot.MISSING:
             self.tracker.block(check)
         return case_id, username
 
@@ -493,7 +516,7 @@ class _RecordValidator:
         if entries is None:
             self.tracker.block(check)
             return
-        unit_ok = slots["offset_unit"] is Slot.OK and record["offset_unit"] == OFFSET_UNIT
+        unit_ok = self._offset_unit_ok(record, slots)
         for item in self._iter_items(entries):
             if item is None or not isinstance(item.value, dict):
                 self.tracker.block(check)

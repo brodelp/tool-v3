@@ -55,9 +55,10 @@ def raw_record(**replacements: str) -> bytes:
 # ---------------------------------------------------------------- V02 missing / null / wrong types
 
 CORE = ["case_id", "username", "narrative", "offset_unit", "annotations"]
+REQUIRED = ["case_id", "username", "narrative"]
 
 
-@pytest.mark.parametrize("field", CORE)
+@pytest.mark.parametrize("field", REQUIRED)
 def test_missing_core_field_is_required_field_without_type_cascade(field: str) -> None:
     response = single(make_record(**{field: MISSING}))
     assert response.status == 422
@@ -450,14 +451,85 @@ def test_unknown_labels_fail_even_with_empty_arrays(label: str) -> None:
     assert response.json()["records"][0]["annotation_count"] is None
 
 
-def test_offsetunit_alias_is_metadata_and_does_not_satisfy_offset_unit() -> None:
-    record = make_record(offset_unit=MISSING)
-    record["offsetUnit"] = "unicode-code-point"
+def test_offsetunit_alias_is_metadata_and_does_not_change_the_unit() -> None:
+    record = make_record(offsetUnit="utf-16")
     response = single(record)
-    assert issues_of(response) == [("/offset_unit", "REQUIRED_FIELD")]
+    assert response.status == 200
+    assert response.json()["records"][0]["offset_unit"] == "unicode-code-point"
     paths = [f["path"] for f in response.json()["foreign_fields"]]
     assert "/offsetUnit" in paths
-    assert checks_of(response)["offset_ranges"] == "skipped"
+
+
+# ---------------------------------------------------------------- optional offset_unit/annotations
+
+
+def test_minimal_record_passes() -> None:
+    record = {"case_id": "12345678-1", "username": "demo_annotator", "narrative": "Aspirin."}
+    response = single(record)
+    assert response.status == 200
+    observation = response.json()["records"][0]
+    assert observation["checks"] == ALL_PASSED
+    assert observation["case_id"] == "12345678-1"
+    assert observation["offset_unit"] == "unicode-code-point"
+    assert observation["annotation_count"] == 0
+    assert observation["annotations_by_label"] == {}
+    assert response.json()["foreign_fields"] == []
+
+
+def test_minimal_record_echo_is_unchanged() -> None:
+    raw = b'{"case_id": "12345678-1", "username": "demo_annotator", "narrative": "Aspirin."}'
+    response = post_single(raw, query="echo=true")
+    assert response.status == 200
+    # Nothing is inserted: no offset_unit, no annotations map.
+    assert response.body.endswith(b',"echo":' + raw + b"}")
+
+
+def test_absent_offset_unit_uses_code_points_for_annotations() -> None:
+    record = make_record(
+        narrative="A\U0001f600 rash", annotations={"AE": [{"text": "rash", "start": 3, "end": 7}]}
+    )
+    response = single(record)
+    assert response.status == 200
+    assert response.json()["records"][0]["offset_unit"] == "unicode-code-point"
+
+
+def test_supplied_offset_unit_is_still_validated() -> None:
+    assert single(make_record(offset_unit="unicode-code-point")).status == 200
+    for value in ("utf-16", "Unicode-Code-Point", "unicode-code-point ", ""):
+        response = single(make_record(offset_unit=value))
+        assert issues_of(response) == [("/offset_unit", "INVALID_OFFSET_UNIT")]
+        assert response.json()["records"][0]["offset_unit"] is None
+        assert checks_of(response)["offset_ranges"] == "skipped"
+
+
+@pytest.mark.parametrize("value", [None, 1, ["unicode-code-point"]])
+def test_non_string_offset_unit_is_invalid_type(value: Any) -> None:
+    response = single(make_record(offset_unit=value))
+    assert issues_of(response) == [("/offset_unit", "INVALID_TYPE")]
+    assert response.json()["records"][0]["offset_unit"] is None
+    assert checks_of(response) == with_checks(
+        field_types="failed",
+        field_values="skipped",
+        offset_ranges="skipped",
+        text_matches="skipped",
+    )
+
+
+def test_offset_unit_is_reported_for_every_batch_record() -> None:
+    response = post_batch(
+        dumps(
+            {
+                "records": [
+                    make_record(),
+                    make_record(case_id="5002-1", offset_unit="unicode-code-point"),
+                    make_record(case_id="5003-1", offset_unit="bytes"),
+                    "not a record",
+                ]
+            }
+        )
+    )
+    units = [r["offset_unit"] for r in response.json()["records"]]
+    assert units == ["unicode-code-point", "unicode-code-point", None, None]
 
 
 # ---------------------------------------------------------------- V05 Unicode integrity
@@ -810,12 +882,21 @@ def test_empty_map_passes_annotation_checks_even_when_other_fields_fail() -> Non
     assert response.json()["records"][0]["annotations_by_label"] == {}
 
 
-def test_missing_map_is_not_zero_annotations() -> None:
+def test_missing_map_is_zero_annotations() -> None:
+    # A narrative without annotations is the default submission (spec rev 0.4).
     response = single(make_record(annotations=MISSING))
+    assert response.status == 200
+    assert checks_of(response) == ALL_PASSED
+    observation = response.json()["records"][0]
+    assert observation["annotation_count"] == 0
+    assert observation["annotations_by_label"] == {}
+
+
+def test_missing_map_passes_annotation_checks_even_when_other_fields_fail() -> None:
+    response = single(make_record(annotations=MISSING, narrative=MISSING, offset_unit=5))
     checks = checks_of(response)
     for name in ("label_membership", "offset_ranges", "text_matches", "annotation_duplicates"):
-        assert checks[name] == "skipped"
-    assert response.json()["records"][0]["annotation_count"] is None
+        assert checks[name] == "passed"
 
 
 # ---------------------------------------------------------------- V17 observations

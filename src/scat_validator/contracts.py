@@ -157,8 +157,21 @@ class Record(BaseModel):
     case_id: CaseId
     username: Username
     narrative: Narrative
-    offset_unit: OffsetUnit = Field(description="Exactly `unicode-code-point`.")
-    annotations: AnnotationMap
+    offset_unit: OffsetUnit = Field(
+        default=OFFSET_UNIT,
+        description=(
+            "Optional. Offsets are always Unicode code points; when supplied, the value must be "
+            "exactly `unicode-code-point`. The unit used is reported in each record observation; "
+            "an absent value is not inserted into the source or echo."
+        ),
+    )
+    annotations: AnnotationMap = Field(
+        default_factory=dict,
+        description=(
+            "Optional pre-existing annotations. Absent means zero annotations; explicit null is "
+            "a type error."
+        ),
+    )
 
 
 class BatchEnvelope(BaseModel):
@@ -280,6 +293,15 @@ class RecordObservation(TypedDict):
     narrative_code_points: Annotated[
         int | None,
         Field(description="len(narrative) when it is a Unicode-compatible string; else null."),
+    ]
+    offset_unit: Annotated[
+        OffsetUnit | None,
+        Field(
+            description=(
+                "Coordinate unit the service used for annotation offsets: `unicode-code-point` "
+                "when `offset_unit` is absent or valid; null when a supplied value is invalid."
+            )
+        ),
     ]
     annotation_count: Annotated[
         int | None,

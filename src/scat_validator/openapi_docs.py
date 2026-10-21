@@ -77,6 +77,7 @@ def _observation(index: int, path: str, case_id: str, *, valid: bool) -> dict[st
         "case_id": case_id,
         "username": "demo_annotator",
         "narrative_code_points": 22,
+        "offset_unit": "unicode-code-point",
         "annotation_count": 2,
         "annotations_by_label": {"SDrug": 1, "AE": 1},
         "checks": checks,

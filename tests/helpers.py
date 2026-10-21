@@ -128,7 +128,6 @@ BASE_RECORD: dict[str, Any] = {
     "case_id": "5001-1",
     "username": "demo_annotator",
     "narrative": "Aspirin caused nausea.",
-    "offset_unit": "unicode-code-point",
     "annotations": {
         "SDrug": [{"text": "Aspirin", "start": 0, "end": 7, "external_id": "ann-001"}],
         "AE": [{"text": "nausea", "start": 15, "end": 21}],

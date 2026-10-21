@@ -111,13 +111,9 @@ def test_echo_parameter(spec: dict[str, Any]) -> None:
 def test_record_schema(spec: dict[str, Any]) -> None:
     record = schemas(spec)["Record"]
     assert record["additionalProperties"] is True
-    assert record["required"] == [
-        "case_id",
-        "username",
-        "narrative",
-        "offset_unit",
-        "annotations",
-    ]
+    assert record["required"] == ["case_id", "username", "narrative"]
+    assert record["properties"]["offset_unit"]["default"] == "unicode-code-point"
+    assert "default" not in record["properties"]["annotations"]
     assert "project_id" not in record["properties"]
     case_id = record["properties"]["case_id"]
     assert (case_id["type"], case_id["minLength"], case_id["maxLength"]) == ("string", 1, 64)
@@ -182,9 +178,9 @@ def test_response_variants(spec: dict[str, Any]) -> None:
     status_enum = schemas(spec)["CheckStatus"]["enum"]
     assert status_enum == ["passed", "failed", "skipped"]
     observation = schemas(spec)["RecordObservation"]
-    assert len(observation["required"]) == 10
+    assert len(observation["required"]) == 11
     assert "project_id" not in observation["properties"]
-    for nullable in ("case_id", "username", "annotation_count"):
+    for nullable in ("case_id", "username", "offset_unit", "annotation_count"):
         types = [branch.get("type") for branch in observation["properties"][nullable]["anyOf"]]
         assert "null" in types
     issue = schemas(spec)["Issue"]
