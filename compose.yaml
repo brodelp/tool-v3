@@ -10,6 +10,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    # Stage 1 does not read DATABASE_URL yet; the database is provisioned for the next stage.
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-scat}:${POSTGRES_PASSWORD:-scat}@db:5432/${POSTGRES_DB:-scat}
+    depends_on:
+      db:
+        condition: service_healthy
     # Host exposure is loopback-only by design (spec §5, §10).
     ports:
       - "127.0.0.1:8000:8000"
@@ -23,3 +29,26 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  db:
+    # Keep the major version in step with postgresql-client in the Dockerfile's dev stage.
+    image: postgres:18.6-trixie
+    # Dev-only defaults; override them in a git-ignored .env (see .env.example).
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-scat}
+      POSTGRES_USER: ${POSTGRES_USER:-scat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-scat}
+    # PostgreSQL 18+ images keep data in /var/lib/postgresql/<major>/docker, so the volume mounts
+    # the parent directory; mounting the older .../data path would leave the data unpersisted.
+    volumes:
+      - pgdata:/var/lib/postgresql
+    # No published port: only services on this Compose network reach the database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:

@@ -129,3 +129,17 @@ an input restriction or relaxes a "must".
   `echo`, `path_truncated`) are then truly absent, while nullable observation fields are explicit
   `null`.
 - The label map and label-count schemas are generated from `config.LABELS`.
+
+## Local infrastructure
+
+- **PostgreSQL is provisioned, not used.** Compose runs a `db` service (`postgres:18.6-trixie`)
+  ahead of the stateful stage. Stage 1 code never connects to it: `DATABASE_URL` is set on `api`
+  but unread, no driver is installed, and validation stays free of storage (§1, §12). The `api`
+  container waits for a healthy `db` only so the next stage inherits a working topology.
+- **No host port.** The database is reachable only on the Compose network. The dev container
+  forwards `db:5432` through VS Code while it is open; nothing is published on the host.
+- **Dev-only credentials.** `scat`/`scat`/`scat` defaults live in `compose.yaml` and can be
+  overridden in a git-ignored `.env` (`.env.example`). They are acceptable only because the
+  database is not exposed beyond the machine.
+- **Separate data per project.** `docker compose up` (`scat-v3_pgdata`) and the dev container
+  (`scat-v3-devcontainer_pgdata`) use different volumes.

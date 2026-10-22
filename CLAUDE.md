@@ -6,6 +6,9 @@
   bind-mounted at `/app`, virtualenv at `/opt/venv`. Run Python, uv, and `make` targets there.
 - Compose commands (`docker compose up`, `docker compose down`) run on the Windows host, not in the
   container. See README.md.
+- Compose also runs PostgreSQL 18.6 as service `db` (no host port). Stage 1 code must not connect to
+  it. In the dev container, `psql` connects via the `PG*` variables; there is no Docker CLI, so
+  starting, stopping, or resetting the database happens on the host (README.md, Database).
 - Runtimes and dependencies are pinned (`Dockerfile`, `pyproject.toml`, `uv.lock`). Don't bump a
   version or re-lock unless asked; after editing dependencies, run `make lock` and commit `uv.lock`.
 
