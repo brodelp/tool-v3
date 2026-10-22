@@ -20,8 +20,18 @@ WORKDIR /app
 # ---------------------------------------------------------------- dev
 # Dev container target: tooling + non-root user; source is bind-mounted at /app.
 FROM base AS dev
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# gh comes from GitHub's apt repository; everything else from Debian.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git make curl ca-certificates \
+    && apt-get install -y --no-install-recommends git make curl ca-certificates ripgrep \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 ARG USERNAME=vscode
 ARG USER_UID=1000
@@ -31,6 +41,15 @@ RUN groupadd --gid "${USER_GID}" "${USERNAME}" \
     && mkdir -p /opt/venv \
     && chown "${USERNAME}:${USERNAME}" /opt/venv /app
 USER ${USERNAME}
+# Claude Code (native installer). Config lives in ~/.claude, which the dev container mounts as a
+# named volume; creating it here makes the fresh volume owned by the user, not root.
+# The auto-updater is off so the version only changes on rebuild.
+ARG CLAUDE_CODE_VERSION=stable
+ENV PATH="/home/${USERNAME}/.local/bin:${PATH}" \
+    CLAUDE_CONFIG_DIR=/home/${USERNAME}/.claude \
+    DISABLE_AUTOUPDATER=1
+RUN mkdir -p "/home/${USERNAME}/.claude" \
+    && curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"
 # Pre-install locked dependencies (incl. dev group) so the container opens ready;
 # postCreateCommand then installs the project itself in editable mode.
 COPY --chown=${USERNAME}:${USERNAME} pyproject.toml uv.lock ./

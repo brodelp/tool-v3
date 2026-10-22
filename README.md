@@ -47,6 +47,7 @@ A record needs only three fields. A narrative without annotations is the default
 | --- | --- | --- |
 | CPython | 3.14.8 (`python:3.14.8-slim-trixie`) | `Dockerfile`, `requires-python` in `pyproject.toml` |
 | uv | 0.13.1 | `Dockerfile` |
+| Claude Code | `stable` channel at build time, auto-updater off (dev container only) | `CLAUDE_CODE_VERSION` in `Dockerfile` |
 | Dependencies | exact versions (FastAPI, Pydantic v2, uvicorn, email-validator; ruff, mypy, pytest, httpx) | `pyproject.toml` + `uv.lock` |
 
 You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code are enough.
@@ -77,6 +78,11 @@ You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code a
 To smoke-test the real server: run `make run` in one container terminal and `make smoke` in a
 second one. While `make run` is active, VS Code forwards port 8000 to the host (usually
 `http://localhost:8000`; check the **Ports** panel if 8000 was already taken).
+
+The dev container also includes `gh`, `ripgrep`, and Claude Code. Run `claude` in a container
+terminal and log in once: login and settings live in the `claude-config` volume, so they survive
+rebuilds. Project guidance for Claude is in `CLAUDE.md`, and shared permissions are in
+`.claude/settings.json` (personal overrides go in the git-ignored `.claude/settings.local.json`).
 
 After changing `Dockerfile`, `compose.yaml`, or `.devcontainer/`, run
 **Dev Containers: Rebuild Container**.
