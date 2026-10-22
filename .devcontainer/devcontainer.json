@@ -30,6 +30,7 @@
           "editor.defaultFormatter": "charliermarsh.ruff",
           "editor.formatOnSave": true
         },
+        "terminal.integrated.detectLocale": "off",
         "files.eol": "\n",
         "files.insertFinalNewline": true
       }

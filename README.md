@@ -213,6 +213,10 @@ exception type and source location.
   `-p scat-v3-devcontainer` for the dev container). `password authentication failed` after
   editing `.env` means the volume still has the old credentials: reset it (see
   [Database](#database)).
+- **`perl: warning: Setting locale failed`** from `psql` or `pg_isready`: `LANG` names a locale
+  the image lacks (VS Code sets it from your display language). The dev container sets
+  `LANG=C.UTF-8` and turns off `terminal.integrated.detectLocale`; rebuild it, or run
+  `export LANG=C.UTF-8` in an older terminal.
 - **`psql: could not translate host name "db"`**: the `db` service is not running. Rebuild the dev
   container, or run `make db-wait` if it is still starting.
 - **`the path "C:\..." is not shared from the host`**: Docker Desktop is using a backend that

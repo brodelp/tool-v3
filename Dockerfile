@@ -54,9 +54,12 @@ USER ${USERNAME}
 # named volume; creating it here makes the fresh volume owned by the user, not root.
 # The auto-updater is off so the version only changes on rebuild.
 ARG CLAUDE_CODE_VERSION=stable
+# LANG: the slim image has only the C/C.UTF-8 locales; any other value makes Debian's Perl-based
+# psql/pg_isready wrappers print locale warnings.
 ENV PATH="/home/${USERNAME}/.local/bin:${PATH}" \
     CLAUDE_CONFIG_DIR=/home/${USERNAME}/.claude \
-    DISABLE_AUTOUPDATER=1
+    DISABLE_AUTOUPDATER=1 \
+    LANG=C.UTF-8
 RUN mkdir -p "/home/${USERNAME}/.claude" \
     && curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"
 # Pre-install locked dependencies (incl. dev group) so the container opens ready;
