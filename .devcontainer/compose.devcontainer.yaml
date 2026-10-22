@@ -1,6 +1,7 @@
 # Dev container override for ../compose.yaml.
 # Relative paths resolve against the first compose file's directory (the project root).
 # A separate project name keeps the dev container from replacing the `docker compose up` service.
+# It also gives the dev container its own database volume (scat-v3-devcontainer_pgdata).
 name: scat-v3-devcontainer
 
 services:
@@ -11,6 +12,13 @@ services:
     image: scat-validator:devcontainer
     read_only: false
     command: ["sleep", "infinity"]
+    # libpq variables so `psql` and `make psql` connect without arguments.
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-scat}
+      PGUSER: ${POSTGRES_USER:-scat}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-scat}
     volumes:
       - .:/app:cached
       # Claude Code login and settings survive container rebuilds.

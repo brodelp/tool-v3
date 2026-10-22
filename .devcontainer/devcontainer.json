@@ -6,9 +6,10 @@
   "remoteUser": "vscode",
   "shutdownAction": "stopCompose",
   "postCreateCommand": "git config --global --add safe.directory /app && uv sync --locked",
-  "forwardPorts": [8000],
+  "forwardPorts": [8000, "db:5432"],
   "portsAttributes": {
-    "8000": { "label": "SCAT API", "onAutoForward": "notify" }
+    "8000": { "label": "SCAT API", "onAutoForward": "notify" },
+    "db:5432": { "label": "PostgreSQL", "onAutoForward": "silent" }
   },
   "customizations": {
     "vscode": {
@@ -29,6 +30,7 @@
           "editor.defaultFormatter": "charliermarsh.ruff",
           "editor.formatOnSave": true
         },
+        "terminal.integrated.detectLocale": "off",
         "files.eol": "\n",
         "files.insertFinalNewline": true
       }

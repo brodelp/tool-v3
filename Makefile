@@ -1,7 +1,7 @@
 # Named commands; run inside the dev container (terminal at /app).
 # Compose commands run on the host; see README.md.
 
-.PHONY: fmt lint typecheck test check run smoke lock
+.PHONY: fmt lint typecheck test check run smoke lock psql db-wait
 
 fmt:
 	uv run --locked ruff format .
@@ -31,3 +31,11 @@ smoke:
 
 lock:
 	uv lock
+
+# Database (dev container): the PG* variables from compose.devcontainer.yaml select the db service.
+psql:
+	psql
+
+db-wait:
+	@for i in $$(seq 30); do pg_isready --quiet && exit 0; sleep 1; done; \
+	echo "PostgreSQL at $$PGHOST:$$PGPORT is not ready" >&2; exit 1

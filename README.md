@@ -6,8 +6,9 @@ implementation contract is [docs/scat-validation-endpoint-spec.md](docs/scat-val
 (revision 0.4).
 
 A successful response means **valid under that contract**. Nothing is stored, authenticated,
-authorized, looked up in a database, or checked for clinical correctness. There is no frontend and
-no database.
+authorized, looked up in a database, or checked for clinical correctness. There is no frontend.
+Compose already runs a PostgreSQL container for the next (stateful) stage, but the validator never
+connects to it (see [Database](#database)).
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -47,6 +48,7 @@ A record needs only three fields. A narrative without annotations is the default
 | --- | --- | --- |
 | CPython | 3.14.8 (`python:3.14.8-slim-trixie`) | `Dockerfile`, `requires-python` in `pyproject.toml` |
 | uv | 0.13.1 | `Dockerfile` |
+| PostgreSQL | 18.6 server (`postgres:18.6-trixie`); `psql` 18 client from the PostgreSQL apt repository (dev container only) | `compose.yaml`, `POSTGRES_CLIENT_MAJOR` in `Dockerfile` |
 | Claude Code | `stable` channel at build time, auto-updater off (dev container only) | `CLAUDE_CODE_VERSION` in `Dockerfile` |
 | Dependencies | exact versions (FastAPI, Pydantic v2, uvicorn, email-validator; ruff, mypy, pytest, httpx) | `pyproject.toml` + `uv.lock` |
 
@@ -78,6 +80,8 @@ You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code a
 | `make run` | Start the API with auto-reload on `0.0.0.0:8000` |
 | `make smoke` | Smoke-test a running server (default `http://127.0.0.1:8000`; override with `BASE_URL=...`) |
 | `make lock` | Re-resolve `uv.lock` after editing dependencies in `pyproject.toml` |
+| `make psql` | Open `psql` on the dev container's database |
+| `make db-wait` | Wait up to 30 s for the database to accept connections |
 
 To smoke-test the real server: run `make run` in one container terminal and `make smoke` in a
 second one. While `make run` is active, VS Code forwards port 8000 to the host (usually
@@ -88,7 +92,7 @@ terminal and log in once: login and settings live in the `claude-config` volume,
 rebuilds. Project guidance for Claude is in `CLAUDE.md`, and shared permissions are in
 `.claude/settings.json` (personal overrides go in the git-ignored `.claude/settings.local.json`).
 
-After changing `Dockerfile`, `compose.yaml`, or `.devcontainer/`, run
+After changing `Dockerfile`, `compose.yaml`, `.devcontainer/`, or `.env`, run
 **Dev Containers: Rebuild Container**.
 
 ## Option B: Run the service with Docker Compose
@@ -107,6 +111,30 @@ The service listens on `0.0.0.0:8000` inside the container and is published only
 - OpenAPI: <http://localhost:8000/openapi.json>
 
 Stop the service with `Ctrl+C` in that terminal, then run `docker compose down`.
+
+`docker compose up` also starts the `db` service; `api` starts once the database is healthy.
+
+## Database
+
+PostgreSQL 18.6 runs as the `db` Compose service, for both the dev container and
+`docker compose up`. Stage 1 does not use it: `DATABASE_URL` is set on `api` but no code reads it.
+
+- **Credentials** are dev-only defaults (database, user, and password all `scat`). To change
+  them, copy `.env.example` to `.env` (git-ignored) before the first start. The values only take
+  effect when a volume is created, so reset the volume after changing them.
+- **Inside the dev container**, `PGHOST`, `PGUSER`, `PGDATABASE`, and `PGPASSWORD` are set, so
+  `psql` (or `make psql`) connects with no arguments. Code should read `DATABASE_URL`:
+  `postgresql://scat:scat@db:5432/scat`.
+- **From Windows tools** (DBeaver, pgAdmin): while the dev container is open, VS Code forwards
+  `db:5432`. Use the local address shown in the **Ports** panel (usually `localhost:5432`, or
+  another port if 5432 is taken). The database port is never published by Compose, so
+  `docker compose up` alone gives no host access.
+- **Data** lives in a named volume per Compose project and survives restarts and rebuilds:
+  `scat-v3-devcontainer_pgdata` for the dev container and `scat-v3_pgdata` for
+  `docker compose up`. The two databases are independent.
+- **Reset** (deletes all data) from a host terminal in `tool-v3`: close the dev container window,
+  then run `docker compose -p scat-v3-devcontainer down -v` for the dev container database, or
+  `docker compose down -v` for the `docker compose up` one.
 
 ## Exercising the API
 
@@ -181,6 +209,16 @@ exception type and source location.
 - **Container fails to start**: run `docker compose logs api` and `docker compose ps` (the
   health check polls `/healthz`). To rebuild from scratch, run `docker compose build --no-cache`.
 - **Dev container fails to build**: Command Palette → **Dev Containers: Show Container Log**.
+- **`api` never starts and `db` is unhealthy**: run `docker compose logs db` (add
+  `-p scat-v3-devcontainer` for the dev container). `password authentication failed` after
+  editing `.env` means the volume still has the old credentials: reset it (see
+  [Database](#database)).
+- **`perl: warning: Setting locale failed`** from `psql` or `pg_isready`: `LANG` names a locale
+  the image lacks (VS Code sets it from your display language). The dev container sets
+  `LANG=C.UTF-8` and turns off `terminal.integrated.detectLocale`; rebuild it, or run
+  `export LANG=C.UTF-8` in an older terminal.
+- **`psql: could not translate host name "db"`**: the `db` service is not running. Rebuild the dev
+  container, or run `make db-wait` if it is still starting.
 - **`the path "C:\..." is not shared from the host`**: Docker Desktop is using a backend that
   only mounts listed folders (such as Docker VMM). Add the parent folder of `tool-v3` under
   **Settings → Resources → File Sharing** (see Prerequisites), apply, and rebuild the container.

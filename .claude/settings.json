@@ -15,5 +15,10 @@
       "Bash(git log:*)",
       "Bash(git show:*)"
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@anthropic-plugin-directory": true,
+    "pyright-lsp@claude-plugins-official": true,
+    "code-simplifier@anthropic-plugin-directory": true
   }
 }
