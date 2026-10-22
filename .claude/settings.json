@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make fmt)",
+      "Bash(make lint)",
+      "Bash(make typecheck)",
+      "Bash(make test)",
+      "Bash(make check)",
+      "Bash(make smoke)",
+      "Bash(uv run --locked pytest:*)",
+      "Bash(uv run --locked mypy:*)",
+      "Bash(uv run --locked ruff:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)"
+    ]
+  }
+}
