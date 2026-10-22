@@ -54,7 +54,11 @@ You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code a
 
 ## Prerequisites (Windows host)
 
-1. Docker Desktop running with the WSL 2 backend (Linux containers).
+1. Docker Desktop running with the WSL 2 backend (Linux containers). With the Docker VMM
+   backend instead, add the folder that holds your projects (for example
+   `C:\Users\<you>\Workspaces`) under **Settings → Resources → File Sharing**, then
+   **Apply & restart**. Share your code root rather than your whole user profile, so containers
+   can't mount `.ssh` or other credentials. The WSL 2 backend needs no File Sharing entry.
 2. VS Code with the **Dev Containers** extension (`ms-vscode-remote.remote-containers`).
 
 ## Option A: Develop in the dev container
@@ -177,6 +181,9 @@ exception type and source location.
 - **Container fails to start**: run `docker compose logs api` and `docker compose ps` (the
   health check polls `/healthz`). To rebuild from scratch, run `docker compose build --no-cache`.
 - **Dev container fails to build**: Command Palette → **Dev Containers: Show Container Log**.
+- **`the path "C:\..." is not shared from the host`**: Docker Desktop is using a backend that
+  only mounts listed folders (such as Docker VMM). Add the parent folder of `tool-v3` under
+  **Settings → Resources → File Sharing** (see Prerequisites), apply, and rebuild the container.
 - **TLS/certificate errors while downloading packages** (common behind corporate proxies):
   the build needs your organization's root CA certificate added to the image.
 - **`uv sync --locked` fails with "lockfile needs to be updated"**: `pyproject.toml` changed
