@@ -5,7 +5,7 @@
   "workspaceFolder": "/app",
   "remoteUser": "vscode",
   "shutdownAction": "stopCompose",
-  "postCreateCommand": "git config --global --add safe.directory /app && uv sync --locked",
+  "postCreateCommand": "git config --global --add safe.directory /app && uv sync --locked && make db-wait && make migrate",
   "forwardPorts": [8000, "db:5432"],
   "portsAttributes": {
     "8000": { "label": "SCAT API", "onAutoForward": "notify" },
