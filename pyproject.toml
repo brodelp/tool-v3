@@ -1,7 +1,7 @@
 [project]
 name = "scat-validator"
 version = "0.1.0"
-description = "SCAT stage 1: validation and inspection API for fictional case data."
+description = "SCAT: validation, submission storage, and export API for fictional case data."
 readme = "README.md"
 requires-python = "==3.14.*"
 dependencies = [
@@ -9,6 +9,9 @@ dependencies = [
     "uvicorn==0.54.0",
     "pydantic==2.14.1",
     "email-validator==2.3.0",
+    "sqlalchemy==2.1.4",
+    "psycopg[binary]==3.3.6",
+    "alembic==1.20.0",
 ]
 
 [dependency-groups]
