@@ -72,6 +72,13 @@ class Msg:
     UNSUPPORTED_QUERY_NAME: Final = (
         "A query parameter name contains U+0000, an unpaired surrogate, or invalid UTF-8."
     )
+    NO_QUERY: Final = "This endpoint accepts no query parameters."
+    UNSUPPORTED_PARAMETER: Final = (
+        "Parameter values must not contain U+0000, an unpaired surrogate, or invalid UTF-8."
+    )
+    USERNAME_REQUIRED: Final = "The username query parameter is required."
+    USERNAME_REPEATED: Final = "username must not be repeated."
+    UNKNOWN_IDENTITY_QUERY: Final = "Only the username query parameter is supported."
 
 
 def compose_message(message: str, *, length_fallback: bool, name_fallback: bool) -> str:

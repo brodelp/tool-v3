@@ -10,7 +10,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    # Stage 1 does not read DATABASE_URL yet; the database is provisioned for the next stage.
+    # Read by the stage 2 submission routes and by the migrations the image runs before serving.
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-scat}:${POSTGRES_PASSWORD:-scat}@db:5432/${POSTGRES_DB:-scat}
     depends_on:

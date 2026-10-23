@@ -75,12 +75,13 @@ ENV UV_COMPILE_BYTECODE=1
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
-COPY README.md ./
+COPY README.md alembic.ini ./
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
 RUN groupadd --system app && useradd --system --gid app --no-create-home app
 USER app
 EXPOSE 8000
-# No uvicorn access log: it would record query values. The app logs route/status/duration/counts.
-CMD ["uvicorn", "scat_validator.api:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+# Apply database migrations (stage 2), then serve. No uvicorn access log: it would record query
+# values. The app logs route/status/duration/counts. exec keeps uvicorn as the init's child.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn scat_validator.api:app --host 0.0.0.0 --port 8000 --no-access-log"]

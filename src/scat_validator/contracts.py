@@ -186,7 +186,7 @@ class BatchEnvelope(BaseModel):
 
 type Mode = Literal["single", "batch"]
 type CheckStatus = Literal["passed", "failed", "skipped"]
-type Location = Literal["body", "query"]
+type Location = Literal["body", "query", "path"]
 type IssueCode = Literal[
     "REQUIRED_FIELD",
     "INVALID_TYPE",
@@ -218,6 +218,10 @@ type ErrorCode = Literal[
     "INVALID_OPTIONS",
     "INVALID_DOCUMENT",
     "INTERNAL_ERROR",
+    "ALREADY_SUBMITTED",
+    "STORAGE_UNAVAILABLE",
+    "INVALID_PARAMETERS",
+    "NOT_FOUND",
 ]
 
 
@@ -229,7 +233,8 @@ class Issue(TypedDict):
         str,
         Field(
             description=(
-                f"JSON Pointer relative to the body or conceptual query object; at most "
+                f"JSON Pointer relative to the body, or to the conceptual query or path-parameter "
+                "object; at most "
                 f"{MAX_PATH_BYTES} UTF-8 bytes. When the exact path is too long or contains an "
                 "unsupported property name, the deepest representable enclosing path is used."
             )
@@ -384,5 +389,62 @@ class RequestFailure(TypedDict):
 RequestFailure.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
 
 
+# ---------------------------------------------------------------- stage 2: submissions
+
+SubmittedAt = Annotated[
+    str,
+    Field(
+        json_schema_extra={"format": "date-time"},
+        description="When the submission was stored: RFC 3339 UTC with microseconds and `Z`.",
+        examples=["2026-10-23T14:05:09.123456Z"],
+    ),
+]
+
+
+class SubmissionReceipt(TypedDict):
+    """A stored submission (HTTP 201). `report` is the stage 1 report for the record."""
+
+    case_id: str
+    username: str
+    submitted_at: SubmittedAt
+    report: ValidationReport
+
+
+class SubmissionExport(TypedDict):
+    """One stored submission, with the whole record exactly as it was validated."""
+
+    case_id: str
+    username: str
+    submitted_at: SubmittedAt
+    offset_unit: Annotated[
+        OffsetUnit, Field(description="Coordinate unit of the record's annotation offsets.")
+    ]
+    record: Annotated[
+        dict[str, Any],
+        Field(
+            description=(
+                "The submitted record byte for byte (foreign metadata, exact numeric tokens, "
+                "escapes, and inner whitespace), without a transport BOM or outer whitespace. "
+                "`offset_unit` is not inserted into it."
+            )
+        ),
+    ]
+
+
+class SubmissionFailure(TypedDict):
+    """Failure of an export or deletion. These routes validate no document."""
+
+    error: ErrorInfo
+    issues: IssueList
+    issue_count: int
+    omitted_issue_count: int
+
+
+SubmissionFailure.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
+
+
 VALIDATION_REPORT_ADAPTER: Final[TypeAdapter[ValidationReport]] = TypeAdapter(ValidationReport)
 REQUEST_FAILURE_ADAPTER: Final[TypeAdapter[RequestFailure]] = TypeAdapter(RequestFailure)
+SUBMISSION_RECEIPT_ADAPTER: Final[TypeAdapter[SubmissionReceipt]] = TypeAdapter(SubmissionReceipt)
+SUBMISSION_EXPORT_ADAPTER: Final[TypeAdapter[SubmissionExport]] = TypeAdapter(SubmissionExport)
+SUBMISSION_FAILURE_ADAPTER: Final[TypeAdapter[SubmissionFailure]] = TypeAdapter(SubmissionFailure)

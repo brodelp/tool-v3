@@ -1,23 +1,31 @@
 # SCAT validator (tool-v3)
 
-Stage 1 of the Safety Concepts Annotation Tool: a small FastAPI service that validates fictional
-case records, explains what it understood, and, on request, echoes the exact decoded input. The
-implementation contract is [docs/scat-validation-endpoint-spec.md](docs/scat-validation-endpoint-spec.md)
-(revision 0.4).
+A prototype of the Safety Concepts Annotation Tool: a small FastAPI service for fictional case
+records, used to narrow requirements for a formal application. There is no frontend.
 
-A successful response means **valid under that contract**. Nothing is stored, authenticated,
-authorized, looked up in a database, or checked for clinical correctness. There is no frontend.
-Compose already runs a PostgreSQL container for the next (stateful) stage, but the validator never
-connects to it (see [Database](#database)).
+- **Stage 1** validates records, explains what it understood, and, on request, echoes the exact
+  decoded input. Contract: [docs/scat-validation-endpoint-spec.md](docs/scat-validation-endpoint-spec.md)
+  (revision 0.4). A successful validation means **valid under that contract**: nothing is
+  stored, authenticated, authorized, or checked for clinical correctness.
+- **Stage 2** stores one validated record per `(case_id, username)` in PostgreSQL, exports it
+  byte for byte, and deletes it. Contract:
+  [docs/scat-stage-2-submission-spec.md](docs/scat-stage-2-submission-spec.md) (revision 0.1).
+
+> **No authentication.** `username` is an unverified claim: anyone who can reach the service can
+> submit, export, or delete any submission. Use fictional data only; the service is published on
+> loopback only.
 
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /api/v1/validate` | Validate one record object |
 | `POST /api/v1/validate-batch` | Validate `{"records": [...]}` with 1–100 entries |
-| `GET /healthz` | Liveness: exactly `{"status":"ok"}` |
+| `POST /api/v1/submissions` | Validate one record and store it (201; 409 if that `(case_id, username)` exists) |
+| `GET /api/v1/submissions/{case_id}?username=…` | Export one stored record, wrapped with `submitted_at` and `offset_unit` |
+| `DELETE /api/v1/submissions/{case_id}?username=…` | Permanently delete one stored record (204) |
+| `GET /healthz` | Liveness: exactly `{"status":"ok"}` (no database check) |
 | `GET /docs`, `GET /openapi.json` | Interactive documentation and the OpenAPI contract |
 
-Both POST endpoints accept the optional query `echo=true` (also `1`, `on`, `yes`, `t`, `y`, any case;
+Both validation endpoints accept the optional query `echo=true` (also `1`, `on`, `yes`, `t`, `y`, any case;
 false spellings `false`, `0`, `off`, `no`, `f`, `n`). No other query parameter is accepted.
 
 ### Minimal submission
@@ -50,7 +58,7 @@ A record needs only three fields. A narrative without annotations is the default
 | uv | 0.13.1 | `Dockerfile` |
 | PostgreSQL | 18.6 server (`postgres:18.6-trixie`); `psql` 18 client from the PostgreSQL apt repository (dev container only) | `compose.yaml`, `POSTGRES_CLIENT_MAJOR` in `Dockerfile` |
 | Claude Code | `stable` channel at build time, auto-updater off (dev container only) | `CLAUDE_CODE_VERSION` in `Dockerfile` |
-| Dependencies | exact versions (FastAPI, Pydantic v2, uvicorn, email-validator; ruff, mypy, pytest, httpx) | `pyproject.toml` + `uv.lock` |
+| Dependencies | exact versions (FastAPI, Pydantic v2, uvicorn, email-validator, SQLAlchemy 2.1, psycopg 3, Alembic; ruff, mypy, pytest, httpx) | `pyproject.toml` + `uv.lock` |
 
 You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code are enough.
 
@@ -67,7 +75,8 @@ You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code a
 
 1. In VS Code: **File → Open Folder…** and select `tool-v3`.
 2. Command Palette (`Ctrl+Shift+P`) → **Dev Containers: Reopen in Container**.
-   The first build takes a few minutes; `postCreateCommand` then runs `uv sync --locked`.
+   The first build takes a few minutes; `postCreateCommand` then runs `uv sync --locked` and
+   applies the database migrations (`make migrate`).
 3. Open a terminal in VS Code (it opens inside the container at `/app`) and use:
 
 | Command | Purpose |
@@ -75,12 +84,13 @@ You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code a
 | `make fmt` | Format and auto-fix lint issues (ruff) |
 | `make lint` | Check formatting and lint (ruff) |
 | `make typecheck` | Strict type checking (mypy) |
-| `make test` | Run all tests (pytest) |
+| `make test` | Run all tests (pytest; needs the `db` service, see [Database](#database)) |
 | `make check` | lint + typecheck + test |
 | `make run` | Start the API with auto-reload on `0.0.0.0:8000` |
 | `make smoke` | Smoke-test a running server (default `http://127.0.0.1:8000`; override with `BASE_URL=...`) |
 | `make lock` | Re-resolve `uv.lock` after editing dependencies in `pyproject.toml` |
 | `make psql` | Open `psql` on the dev container's database |
+| `make migrate` | Apply database migrations (Alembic) to the dev container's database |
 | `make db-wait` | Wait up to 30 s for the database to accept connections |
 
 To smoke-test the real server: run `make run` in one container terminal and `make smoke` in a
@@ -112,13 +122,25 @@ The service listens on `0.0.0.0:8000` inside the container and is published only
 
 Stop the service with `Ctrl+C` in that terminal, then run `docker compose down`.
 
-`docker compose up` also starts the `db` service; `api` starts once the database is healthy.
+`docker compose up` also starts the `db` service; `api` starts once the database is healthy, applies
+the migrations, and then serves.
 
 ## Database
 
 PostgreSQL 18.6 runs as the `db` Compose service, for both the dev container and
-`docker compose up`. Stage 1 does not use it: `DATABASE_URL` is set on `api` but no code reads it.
+`docker compose up`. Only the submission routes use it; validation and `/healthz` work without it.
+When the database is unreachable (or `DATABASE_URL` is unset), the submission routes answer
+`503 STORAGE_UNAVAILABLE`.
 
+- **Schema**: one `submissions` table (`case_id`, `username`, the exact record text, and
+  `submitted_at`, unique on `(case_id, username)`), created by Alembic migrations in
+  `src/scat_validator/migrations/`. Compose applies them when `api` starts; in the dev container
+  they run on create, and `make migrate` applies new ones. A new migration:
+  `uv run --locked alembic revision -m "<message>"`, then mirror it in `storage.py`
+  (`make test` runs `alembic check`).
+- **Tests** create a throwaway database (`scat_test_<random>`) on the same server, migrate it,
+  and drop it afterwards, so they never touch your dev data. They fail if the database is
+  unreachable.
 - **Credentials** are dev-only defaults (database, user, and password all `scat`). To change
   them, copy `.env.example` to `.env` (git-ignored) before the first start. The values only take
   effect when a volume is created, so reset the volume after changing them.
@@ -144,6 +166,8 @@ relative. In Windows PowerShell type `curl.exe`, not `curl`, which is an alias f
 `--include` prints the status line and headers before the JSON body. `--data-binary @file` sends
 the fixture bytes unchanged, with no shell interpolation of JSON.
 
+### Validation
+
 ```bash
 # 1. Minimal record -> HTTP 200 and a validation report
 curl --include --header 'Content-Type: application/json' --data-binary '@examples/valid-record.json' http://localhost:8000/api/v1/validate
@@ -168,6 +192,31 @@ long diagnostic path, and repeated case identifiers.
 Fixture files must be saved as **UTF-8 without a BOM**. The server tolerates one leading BOM,
 but senders should not add one.
 
+### Submissions
+
+Run `make migrate` once first (the dev container does it on create). In bash:
+
+```bash
+# Store the minimal record -> 201, a receipt, and a Location header with the export URL
+curl --include --header 'Content-Type: application/json' --data-binary '@examples/valid-record.json' http://localhost:8000/api/v1/submissions
+
+# Same pair again -> 409 ALREADY_SUBMITTED (delete it first to replace it)
+curl --include --header 'Content-Type: application/json' --data-binary '@examples/valid-record.json' http://localhost:8000/api/v1/submissions
+
+# Export -> 200 {"case_id", "username", "submitted_at", "offset_unit", "record": <exact record>}
+curl --include --get --data-urlencode 'username=demo_annotator' http://localhost:8000/api/v1/submissions/12345678-1
+
+# Delete -> 204; exporting again -> 404 NOT_FOUND
+curl --include --request DELETE --get --data-urlencode 'username=demo_annotator' http://localhost:8000/api/v1/submissions/12345678-1
+```
+
+`username` goes in the query string, not the path, because valid usernames may contain `/`, `?`,
+`#`, and `%`. `--get --data-urlencode` percent-encodes it (including `+` as `%2B`; an unencoded
+`+` decodes to a space and is rejected). Both values must match exactly: `Reviewer@Example.com`
+and `reviewer@example.com` are different users. Submissions accept no query parameters (`echo`
+included); the export returns the whole record exactly as validated, with foreign metadata and
+exact numeric tokens.
+
 ## Project layout
 
 | Path | Responsibility |
@@ -179,10 +228,12 @@ but senders should not add one.
 | `src/scat_validator/paths.py`, `diagnostics.py` | Bounded JSON Pointers with whole-token fallback, capped collectors, fixed messages |
 | `src/scat_validator/reporting.py` | Batch orchestration, envelope rules, report assembly, budgeted serialization and echo |
 | `src/scat_validator/contracts.py`, `openapi_docs.py` | Pydantic schemas, shared strict field types, explicit OpenAPI |
-| `src/scat_validator/api.py` | Thin routes, gate order, status codes, `Cache-Control: no-store`, logging |
-| `tests/` | Raw-byte ASGI tests, pure unit tests, and raw byte fixtures in `tests/fixtures/raw/` |
+| `src/scat_validator/api.py` | Thin routes, gate order, status codes, `Cache-Control: no-store`, logging, storage lifespan |
+| `src/scat_validator/submissions.py` | Submission identity parameters (`case_id` path, `username` query) and receipt/export/failure bodies |
+| `src/scat_validator/storage.py`, `migrations/` | PostgreSQL `submissions` table (SQLAlchemy Core, psycopg 3) and its Alembic migrations |
+| `tests/` | Raw-byte ASGI tests, pure unit tests, raw byte fixtures in `tests/fixtures/raw/`, and database fixtures (`conftest.py`) |
 | `scripts/smoke_test.py` | Real-server smoke test (standard library only) |
-| `docs/acceptance-mapping.md` | V01–V22 mapped to tests and commands |
+| `docs/acceptance-mapping.md` | V01–V22 and S01–S10 mapped to tests and commands |
 | `docs/implementation-decisions.md` | Implementation choices the spec leaves open |
 
 ## Fixtures and line endings
@@ -193,10 +244,11 @@ fixtures (BOMs, malformed UTF-8, exact numeric tokens, duplicate names) are neve
 
 ## Logging
 
-The app logs one line per validation request: route, status, duration, record count, and issue
-count. Uvicorn's access log is disabled (`--no-access-log`) because it would record query values.
-Bodies, values, and exception messages are never logged. An unexpected fault logs only its
-exception type and source location.
+The app logs one line per request to its API routes: method, route template (for example
+`GET /api/v1/submissions/{case_id}`), status, duration, record count, and issue count. Uvicorn's
+access log is disabled (`--no-access-log`) because it would record query values. Bodies, values
+(including `case_id` and `username`), SQL parameters, and exception messages are never logged. An
+unexpected fault or unreachable database logs only its exception type and source location.
 
 ## Troubleshooting
 
@@ -226,5 +278,10 @@ exception type and source location.
   the build needs your organization's root CA certificate added to the image.
 - **`uv sync --locked` fails with "lockfile needs to be updated"**: `pyproject.toml` changed
   without re-locking. Run `make lock` in the dev container and commit `uv.lock`.
+- **`503 STORAGE_UNAVAILABLE` from the submission routes**: the database is unreachable or not
+  migrated. Run `make db-wait`, then `make migrate`; for Compose, check `docker compose logs api`
+  for the migration output.
+- **Tests fail with "PostgreSQL is not reachable"**: the `db` service is down. Rebuild the dev
+  container, or run `make db-wait` if it is still starting.
 - **`415 UNSUPPORTED_MEDIA_TYPE` from curl**: add `--header 'Content-Type: application/json'`.
   curl's `--data-binary` default is `application/x-www-form-urlencoded`.

@@ -1,5 +1,6 @@
-"""Smoke test against a real listening uvicorn process (V01, V12, V22)."""
+"""Smoke test against a real listening uvicorn process (V01, V12, V22, S10)."""
 
+import os
 import socket
 import subprocess
 import sys
@@ -17,7 +18,7 @@ def free_port() -> int:
         return port
 
 
-def test_smoke_script_against_real_server() -> None:
+def test_smoke_script_against_real_server(database_url: str) -> None:
     port = free_port()
     command = [
         sys.executable,
@@ -30,7 +31,9 @@ def test_smoke_script_against_real_server() -> None:
         str(port),
         "--no-access-log",
     ]
-    server = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # The server's lifespan opens storage from DATABASE_URL: point it at the test database.
+    env = os.environ | {"DATABASE_URL": database_url}
+    server = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     try:
         deadline = time.monotonic() + 20
         while True:
@@ -54,3 +57,5 @@ def test_smoke_script_against_real_server() -> None:
     # Server logs carry route/status/counts only: no query strings or payload values.
     assert b"echo=" not in output
     assert b"demo_annotator" not in output
+    assert b"smoke" not in output  # submission case_id and username
+    assert b"DELETE /api/v1/submissions/{case_id} status=204" in output
