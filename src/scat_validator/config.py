@@ -1,4 +1,7 @@
-"""Stage-one constants shared by validation, reporting, and API documentation (spec §2.2, §3.2)."""
+"""Constants shared by validation, reporting, storage, and API documentation.
+
+Stage 1 spec §2.2 and §3.2; stage 2 spec §4 for storage.
+"""
 
 from typing import Final
 
@@ -18,6 +21,9 @@ MAX_CASE_ID_CHARS: Final = 64
 MAX_SAFE_NUMBER: Final = 9_007_199_254_740_991
 
 OFFSET_UNIT: Final = "unicode-code-point"
+
+# Stage 2 storage: seconds before a database connection attempt fails as 503.
+DB_CONNECT_TIMEOUT_SECONDS: Final = 5
 
 # Authoritative label keys in canonical order. Validation and OpenAPI both derive from this tuple.
 LABELS: Final[tuple[str, ...]] = (

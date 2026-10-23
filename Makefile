@@ -1,7 +1,7 @@
 # Named commands; run inside the dev container (terminal at /app).
 # Compose commands run on the host; see README.md.
 
-.PHONY: fmt lint typecheck test check run smoke lock psql db-wait
+.PHONY: fmt lint typecheck test check run smoke lock psql db-wait migrate
 
 fmt:
 	uv run --locked ruff format .
@@ -33,8 +33,14 @@ lock:
 	uv lock
 
 # Database (dev container): the PG* variables from compose.devcontainer.yaml select the db service.
+# Tests create and drop their own throwaway database on the same server.
 psql:
 	psql
+
+# Apply Alembic migrations to DATABASE_URL (the dev container's database). Needed once before
+# `make run` serves the submission routes, and again after pulling a new migration.
+migrate:
+	uv run --locked alembic upgrade head
 
 db-wait:
 	@for i in $$(seq 30); do pg_isready --quiet && exit 0; sleep 1; done; \
