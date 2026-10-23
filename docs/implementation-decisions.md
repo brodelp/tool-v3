@@ -1,7 +1,8 @@
-# Stage 1 implementation decisions
+# Implementation decisions
 
-These are choices the specification (revision 0.4) leaves to the implementation. None of them adds
-an input restriction or relaxes a "must".
+These are choices the specifications leave to the implementation: stage 1 (revision 0.4) first,
+then stage 2 (revision 0.1, [Stage 2 submissions](#stage-2-submissions)). None of them adds an
+input restriction or relaxes a "must".
 
 ## Revision 0.4 intake
 
@@ -132,10 +133,10 @@ an input restriction or relaxes a "must".
 
 ## Local infrastructure
 
-- **PostgreSQL is provisioned, not used.** Compose runs a `db` service (`postgres:18.6-trixie`)
-  ahead of the stateful stage. Stage 1 code never connects to it: `DATABASE_URL` is set on `api`
-  but unread, no driver is installed, and validation stays free of storage (§1, §12). The `api`
-  container waits for a healthy `db` only so the next stage inherits a working topology.
+- **PostgreSQL** runs as the Compose `db` service (`postgres:18.6-trixie`). Stage 1 code never
+  connects to it: validation, reporting, and the `/validate` routes stay free of storage (§1, §12).
+  Only the stage 2 submission routes use it (below). The `api` container waits for a healthy `db`
+  and applies migrations before serving.
 - **No host port.** The database is reachable only on the Compose network. The dev container
   forwards `db:5432` through VS Code while it is open; nothing is published on the host.
 - **Dev-only credentials.** `scat`/`scat`/`scat` defaults live in `compose.yaml` and can be
@@ -143,3 +144,62 @@ an input restriction or relaxes a "must".
   database is not exposed beyond the machine.
 - **Separate data per project.** `docker compose up` (`scat-v3_pgdata`) and the dev container
   (`scat-v3-devcontainer_pgdata`) use different volumes.
+
+## Stage 2 submissions
+
+- **SQLAlchemy Core, not the ORM.** One table with three statements does not need mapped classes
+  or sessions. The `Table` in `storage.py` is the database entity, kept apart from the API
+  contracts (stage 1 §1). The driver is psycopg 3 (binary wheel); `postgresql://` URLs, as
+  Compose provides them, are rewritten to `postgresql+psycopg://`.
+- **Synchronous database access in Starlette's thread pool**, like the CPU-bound validation work.
+  An async driver would add a second concurrency model for no measurable gain at prototype load.
+- **Storage is created in the FastAPI lifespan** from `DATABASE_URL` and disposed at shutdown.
+  With no URL, the routes answer 503 instead of failing at import, so the validator still runs
+  without a database. Tests install their own `Storage` on `app.state` (the raw ASGI test client
+  sends no lifespan events).
+- **503 vs 500.** SQLAlchemy `OperationalError`, `InterfaceError`, and pool `TimeoutError` mean
+  "unreachable" (503 `STORAGE_UNAVAILABLE`, logged as a warning with the exception type). Any
+  other exception is a generic 500 that discards partial results, as in stage 1. `pool_pre_ping`
+  discards connections the server has closed, and connection attempts time out after
+  `DB_CONNECT_TIMEOUT_SECONDS` (5).
+- **Exact text, not `jsonb`.** `source_json` holds `DecodedDocument.document_bytes` decoded as
+  UTF-8: the bytes that passed every gate, without a BOM or outer whitespace. Export embeds them
+  the way echo does, so no re-serializer is involved and numeric tokens survive.
+- **Duplicates use `ON CONFLICT DO NOTHING RETURNING`**, not a read before the write. Concurrent
+  submissions of one pair cannot both succeed, and the losing request gets 409.
+- **Validation before storage.** The submit route runs the stage 1 gates and validator before it
+  looks at storage, so invalid records get their 422 report while the database is down. A valid
+  record observes both `case_id` and `username`, which become the stored identity.
+- **Submit accepts no query parameters.** `echo` is rejected with the new fixed message "This
+  endpoint accepts no query parameters." rather than accepted and ignored. The stored record is
+  available from export.
+- **Response envelopes.** Submission failures before or during storage reuse `RequestFailure`
+  (`mode: "single"`), so `POST /api/v1/submissions` has the same failure shape as
+  `POST /api/v1/validate`. Export and delete validate no document, so they use the closed
+  `SubmissionFailure` (no `mode`, `valid`, or `checks_not_performed`). The four new error codes
+  (`ALREADY_SUBMITTED` 409, `STORAGE_UNAVAILABLE` 503, `INVALID_PARAMETERS` 422, `NOT_FOUND` 404)
+  join the shared `ErrorCode` enum. The validation routes never return them.
+- **The receipt embeds the stage 1 report unchanged**, including the fixed `checks_not_performed`
+  list. That list describes validation; previous-submission detection is the storage step that
+  produces 409.
+- **Identity parameters.** `case_id` is the path segment, read from Starlette's decoded path, so
+  `%2F` cannot reach the handler as part of an identifier (the route does not match). `username`
+  is a query parameter decoded with the stage 1 rules, so `+` is a space and must be sent as `%2B`.
+  `Location` and the smoke test percent-encode every reserved character (`quote(..., safe="")`).
+  Issues use the new `path` location for `/case_id`. A missing `username` gets its own message
+  ("The username query parameter is required.") instead of the record-property wording.
+- **Timestamps** come from the database (`now()`, the transaction start) and are formatted as
+  UTC with microseconds and `Z`, so receipt and export show the same value.
+- **Hard delete** returns 204 with `Cache-Control: no-store` and no `Content-Type`.
+- **Migrations ship inside the package** (`script_location = scat_validator:migrations`), so the
+  non-editable runtime image contains them, and `alembic.ini` is copied next to it. The image
+  `CMD` runs `alembic upgrade head` before `exec uvicorn`. That suits one container; with several
+  replicas, migrations should become a separate one-off job. The dev container runs `make migrate`
+  on create.
+- **Tests use a real PostgreSQL**, not mocks or SQLite: each session creates
+  `scat_test_<random>`, migrates it with Alembic (which also tests the migrations), truncates
+  between tests, and drops it with `WITH (FORCE)`. `alembic check` keeps `storage.py` and the
+  revisions in step. Tests fail rather than skip when the database is unreachable, so a passing
+  `make check` always includes storage.
+- **Versions** stay at 0.1.0 for the package and API: the project does not bump versions without
+  being asked.

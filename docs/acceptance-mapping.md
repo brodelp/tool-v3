@@ -1,4 +1,4 @@
-# Acceptance mapping (spec §11, V01–V22)
+# Acceptance mapping (stage 1 §11, V01–V22; stage 2 §7, S01–S10)
 
 Every test below sends raw request bytes through the real decoder and ASGI app (`tests/helpers.py`),
 unless it is listed under `test_wire.py` / `test_validator_unit.py`, which exercise the pure decoder,
@@ -14,7 +14,7 @@ Commands (dev container, terminal at `/app`):
 
 | ID | Scenario | Tests |
 | --- | --- | --- |
-| V01 | Valid single/batch, health, no DB/frontend | `test_http.py`: `test_valid_single_report_matches_spec_example`, `test_invalid_batch_matches_spec_example_and_never_echoes`, `test_valid_batch_and_repeated_pair_examples`, `test_health`; `test_health.py`; `test_validator_unit.py::test_validation_module_has_no_http_dependency`; `scripts/smoke_test.py` |
+| V01 | Valid single/batch, health, validation needs no DB, no frontend | `test_http.py`: `test_valid_single_report_matches_spec_example`, `test_invalid_batch_matches_spec_example_and_never_echoes`, `test_valid_batch_and_repeated_pair_examples`, `test_health`; `test_health.py`; `test_validator_unit.py::test_validation_module_has_no_http_dependency`; `scripts/smoke_test.py` |
 | V02 | Missing, null, wrong types; no cascades; independent observations | `test_records.py`: `test_missing_core_field_is_required_field_without_type_cascade`, `test_null_core_field_is_invalid_type_only`, `test_wrong_core_types`, `test_wrong_narrative_type_skips_ranges_but_still_checks_duplicates`, `test_non_array_label_value`, `test_non_object_annotation_entry`, `test_missing_annotation_field`, `test_wrong_annotation_field_type`, `test_non_object_single_body_fails_gate_five`, `test_independent_issues_are_all_reported` |
 | V03 | Case identifiers, strict offsets, safe numeric endpoints, >4,300 digits | `test_records.py`: `test_case_id_valid_spellings`, `test_case_id_invalid_syntax`, `test_case_id_empty_or_whitespace`, `test_non_string_case_ids_are_invalid_type`, `test_rejected_case_id_is_reported_once_by_json_values`, `test_project_id_is_foreign_metadata`, `test_non_integer_token_offsets_are_invalid_type`, `test_start_zero_and_negative_zero_are_valid_offsets`, `test_unsafe_offset_is_unsafe_number_only`, `test_safe_metadata_numbers_pass`, `test_adjacent_unsafe_metadata_numbers_fail`; `test_wire.py`: `test_safe_numbers`, `test_unsafe_numbers`, `test_huge_integer_token_decodes_without_digit_limit_error` |
 | V04 | Text, usernames, labels | `test_records.py`: `test_empty_or_whitespace_username_and_narrative`, `test_valid_usernames_pass_unchanged`, `test_invalid_usernames_fail_once_each`, `test_username_profile_rejections`, `test_username_profile_accepts`, `test_sparse_and_empty_annotation_maps_pass`, `test_unknown_labels_fail_even_with_empty_arrays`, `test_offsetunit_alias_is_metadata_and_does_not_change_the_unit`, `test_minimal_record_passes`, `test_minimal_record_echo_is_unchanged`, `test_absent_offset_unit_uses_code_points_for_annotations`, `test_supplied_offset_unit_is_still_validated`, `test_non_string_offset_unit_is_invalid_type`, `test_non_array_label_value` (null arrays); `test_email_validator_special_use_and_dotless_domains_rejected`, `test_username_whitespace_uses_python_isspace`; `test_validator_unit.py::test_username_profile` |
@@ -36,3 +36,22 @@ Commands (dev container, terminal at `/app`):
 | V20 | HTTP / OpenAPI | `test_openapi.py` (all, including `test_documented_request_examples_are_minimal`): resolved references, extensible record/annotation, closed label map and envelope, `int32` IDs, username union, echo parameter, both 422 variants (`test_422_variants_are_mutually_exclusive` validates real responses and examples against each variant), all statuses with no-store, examples equal to runtime responses, runtime responses validate against the published response schemas; `test_http.py::test_all_post_responses_are_no_store_json` |
 | V21 | Gate precedence | `test_http.py`: `test_wrong_media_type_beats_bad_json`, `test_media_type_beats_content_encoding`, `test_encoding_beats_size`, `test_oversize_beats_invalid_echo`, `test_bad_json_beats_invalid_echo`, `test_depth_beats_invalid_echo`, `test_invalid_echo_beats_bad_envelope_and_bad_records` |
 | V22 | Runtime / repeatability | `test_http.py::test_repeated_requests_are_equivalent_and_allocate_nothing`, `test_reporting.py::test_repetitions_across_requests_pass`; `test_real_server.py::test_smoke_script_against_real_server` (spawns uvicorn, runs `scripts/smoke_test.py`, checks logs); `make check`; `make run` + `make smoke`; Compose/dev-container run per README (environment-dependent — see the handoff for what was executed) |
+
+## Stage 2 submissions (S01–S10)
+
+`tests/test_submissions.py` and the stage 2 tests in `test_openapi.py` run against a real
+PostgreSQL database that `tests/conftest.py` creates, migrates, and drops for each session. They
+also send raw bytes through the real ASGI app.
+
+| ID | Scenario | Tests |
+| --- | --- | --- |
+| S01 | Valid record stored with receipt, `Location`, exact bytes | `test_submissions.py`: `test_valid_record_is_stored_with_receipt`, `test_annotated_record_with_metadata_is_stored` |
+| S02 | Gate/validation failures match `/validate` and store nothing; no query parameters on submit | `test_submissions.py`: `test_gate_failures_match_validate_and_store_nothing`, `test_declared_oversize_is_413`, `test_invalid_record_gets_validate_report_and_stores_nothing`, `test_submit_accepts_no_query_parameters`, `test_validate_still_accepts_echo` |
+| S03 | `(case_id, username)` identity: 409 keeps the original; exact-string distinctness | `test_submissions.py`: `test_repeated_pair_is_409_and_original_is_kept`, `test_pairs_are_distinct_by_exact_strings`, `test_storage_insert_reports_conflict_without_overwriting` |
+| S04 | Wrapped, byte-exact export (numbers, escapes, whitespace, no BOM); 404 | `test_submissions.py`: `test_export_returns_wrapped_exact_record`, `test_export_keeps_escapes_and_inner_whitespace`, `test_bom_is_not_stored_or_exported`, `test_export_of_unknown_pair_is_404` |
+| S05 | Hard delete: 204, then 404 | `test_submissions.py`: `test_delete_then_export_and_delete_are_404`, `test_resubmission_after_delete_is_allowed` |
+| S06 | Identity parameters: every §3.4 issue, checked before storage; URL-special usernames round-trip | `test_submissions.py`: `test_invalid_identity_parameters` (export and delete), `test_usernames_with_url_characters_round_trip` |
+| S07 | Storage unconfigured/unreachable → 503; validation and health unaffected | `test_submissions.py`: `test_storage_unavailable_is_503`, `test_unreachable_storage_is_logged_by_type_only`; `test_openapi.py::test_storage_unavailable_example_matches_runtime` |
+| S08 | No identities/values in logs; generic 500 on unexpected faults | `test_submissions.py`: `test_identities_and_values_never_logged`, `test_unexpected_storage_fault_is_generic_500`; `test_real_server.py` (log assertions) |
+| S09 | OpenAPI operations, parameters, statuses, schemas, examples equal runtime | `test_openapi.py`: `test_submission_operations_document_statuses_and_schemas`, `test_submission_failure_is_closed`, `test_submission_examples_match_runtime`, `test_response_variants` (error codes, `path` location) |
+| S10 | Migrations apply and match `storage.py`; real-server round trip | `test_submissions.py`: `test_migrations_match_table_definitions`, `test_migrations_downgrade_and_upgrade`; `test_real_server.py::test_smoke_script_against_real_server` (submit, 409, export, delete, 404); `make migrate` + `make run` + `make smoke`; Compose per README (environment-dependent) |
