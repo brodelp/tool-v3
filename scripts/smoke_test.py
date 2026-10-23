@@ -8,9 +8,10 @@ as raw bytes where numeric fidelity matters.
 
 import http.client
 import json
+import secrets
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES = ROOT / "examples"
@@ -135,17 +136,58 @@ def main() -> None:
         status == 413 and json.loads(body)["error"]["code"] == "PAYLOAD_TOO_LARGE",
     )
 
+    submissions(server)
+
     status, _, body = server.request("GET", "/openapi.json")
     spec = json.loads(body)
+    documented = {
+        "/api/v1/validate",
+        "/api/v1/validate-batch",
+        "/api/v1/submissions",
+        "/api/v1/submissions/{case_id}",
+    }
     check(
-        "GET /openapi.json documents both POST endpoints",
-        status == 200 and {"/api/v1/validate", "/api/v1/validate-batch"} <= set(spec["paths"]),
+        "GET /openapi.json documents every endpoint",
+        status == 200 and documented <= set(spec["paths"]),
     )
 
     status, _, body = server.request("GET", "/docs")
     check("GET /docs -> interactive documentation", status == 200 and b"swagger" in body.lower())
 
     print(f"{len(checks)} smoke checks passed")
+
+
+def submissions(server: Server) -> None:
+    """Submit, export, and delete one record under a fresh case_id (needs a migrated database)."""
+    case_id = f"smoke{secrets.token_hex(4)}-1"
+    username = "smoke+test@example.com"
+    record = (
+        b'{"case_id": "%s", "username": "%s", "narrative": "Aspirin caused nausea.",'
+        b' "dose_mg": 1.2300, "annotations": {"AE": [{"text": "nausea", "start": 15, "end": 21}]}}'
+    ) % (case_id.encode(), username.encode())
+    lookup = f"/api/v1/submissions/{case_id}?username={quote(username, safe='')}"
+
+    status, headers, body = server.request("POST", "/api/v1/submissions", record, JSON)
+    check(
+        "submission -> 201 receipt with export Location (503 means: run the migrations)",
+        status == 201 and headers.get("location") == lookup,
+    )
+    status, _, body = server.request("POST", "/api/v1/submissions", record, JSON)
+    check(
+        "repeated (case_id, username) -> 409 ALREADY_SUBMITTED",
+        status == 409 and json.loads(body)["error"]["code"] == "ALREADY_SUBMITTED",
+    )
+    status, headers, body = server.request("GET", lookup)
+    check(
+        "export -> 200 with the exact record (numeric tokens intact)",
+        status == 200
+        and headers.get("cache-control") == "no-store"
+        and body.endswith(b',"record":' + record + b"}"),
+    )
+    status, _, body = server.request("DELETE", lookup)
+    check("delete -> 204 without a body", status == 204 and body == b"")
+    status, _, _ = server.request("GET", lookup)
+    check("export after delete -> 404", status == 404)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,17 @@ from scat_validator.openapi_docs import (
     EXAMPLE_INVALID_BATCH,
     EXAMPLE_RECORD,
 )
-from tests.helpers import call, dumps, example_bytes, post_batch, post_single
+from scat_validator.storage import Storage
+from tests.helpers import (
+    call,
+    delete,
+    dumps,
+    example_bytes,
+    export,
+    post_batch,
+    post_single,
+    submit,
+)
 
 POST_PATHS = ("/api/v1/validate", "/api/v1/validate-batch")
 
@@ -200,7 +210,12 @@ def test_response_variants(spec: dict[str, Any]) -> None:
         "INVALID_OPTIONS",
         "INVALID_DOCUMENT",
         "INTERNAL_ERROR",
+        "ALREADY_SUBMITTED",
+        "STORAGE_UNAVAILABLE",
+        "INVALID_PARAMETERS",
+        "NOT_FOUND",
     }
+    assert schemas(spec)["Location"]["enum"] == ["body", "query", "path"]
 
 
 def examples_for(operation: dict[str, Any], status: str) -> dict[str, Any]:
@@ -343,3 +358,94 @@ def test_interactive_docs_available() -> None:
     response = call("GET", "/docs")
     assert response.status == 200
     assert b"swagger" in response.body.lower()
+
+
+# ---------------------------------------------------------------- stage 2 submissions (S09)
+
+SUBMISSIONS = "/api/v1/submissions"
+SUBMISSION = "/api/v1/submissions/{case_id}"
+
+
+def test_submission_operations_document_statuses_and_schemas(spec: dict[str, Any]) -> None:
+    post = spec["paths"][SUBMISSIONS]["post"]
+    assert post["parameters"] == []
+    assert post["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/Record"
+    }
+    assert set(post["responses"]) == {"201", "400", "409", "413", "415", "422", "500", "503"}
+    created = post["responses"]["201"]
+    assert "Location" in created["headers"]
+    assert created["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/SubmissionReceipt"
+    }
+    for status in ("409", "503"):
+        schema = post["responses"][status]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/RequestFailure"}
+    assert "no authentication" in post["description"]
+
+    expected_ok = {"get": ("200", "SubmissionExport"), "delete": ("204", None)}
+    for method, (ok_status, ok_schema) in expected_ok.items():
+        operation = spec["paths"][SUBMISSION][method]
+        assert set(operation["responses"]) == {ok_status, "404", "422", "500", "503"}
+        ok = operation["responses"][ok_status]
+        if ok_schema is None:
+            assert "content" not in ok
+        else:
+            assert ok["content"]["application/json"]["schema"] == {
+                "$ref": f"#/components/schemas/{ok_schema}"
+            }
+        for status in ("404", "422", "500", "503"):
+            schema = operation["responses"][status]["content"]["application/json"]["schema"]
+            assert schema == {"$ref": "#/components/schemas/SubmissionFailure"}
+        case_id, username = operation["parameters"]
+        assert (case_id["name"], case_id["in"], case_id["required"]) == ("case_id", "path", True)
+        assert case_id["schema"]["pattern"] == CASE_ID_PATTERN
+        assert (username["name"], username["in"], username["required"]) == (
+            "username",
+            "query",
+            True,
+        )
+        assert username["schema"]["maxLength"] == 255
+        assert "%2B" in username["description"]
+    for path in (SUBMISSIONS, SUBMISSION):
+        for operation in spec["paths"][path].values():
+            for response in operation["responses"].values():
+                assert response["headers"]["Cache-Control"]["schema"]["enum"] == ["no-store"]
+
+
+def test_submission_failure_is_closed(spec: dict[str, Any]) -> None:
+    failure = schemas(spec)["SubmissionFailure"]
+    assert failure["additionalProperties"] is False
+    assert set(failure["required"]) == {"error", "issues", "issue_count", "omitted_issue_count"}
+    export_schema = schemas(spec)["SubmissionExport"]
+    assert export_schema["properties"]["submitted_at"]["format"] == "date-time"
+    assert export_schema["properties"]["offset_unit"]["const"] == "unicode-code-point"
+
+
+def test_submission_examples_match_runtime(spec: dict[str, Any], storage: Storage) -> None:
+    post = spec["paths"][SUBMISSIONS]["post"]
+    request = post["requestBody"]["content"]["application/json"]["examples"]["minimal_record"]
+    receipt = submit(dumps(request["value"]))
+    documented = examples_for(post, "201")["minimal_record"]["value"]
+    assert receipt.json() == documented | {"submitted_at": receipt.json()["submitted_at"]}
+    rejected = submit(dumps(request["value"]), query="echo=true")
+    assert rejected.json() == examples_for(post, "422")["query_parameter"]["value"]
+
+    get = spec["paths"][SUBMISSION]["get"]
+    exported = export("12345678-1", "username=demo_annotator")
+    documented = examples_for(get, "200")["minimal_record"]["value"]
+    assert exported.json() == documented | {"submitted_at": exported.json()["submitted_at"]}
+    missing_username = examples_for(get, "422")["missing_username"]["value"]
+    assert export("12345678-1", "").json() == missing_username
+
+    remove = spec["paths"][SUBMISSION]["delete"]
+    assert delete("12345678-1", "username=demo_annotator").status == 204
+    not_found = delete("12345678-1", "username=demo_annotator")
+    assert not_found.json() == examples_for(remove, "404")["not_found"]["value"]
+
+
+def test_storage_unavailable_example_matches_runtime(spec: dict[str, Any]) -> None:
+    get = spec["paths"][SUBMISSION]["get"]
+    response = export("12345678-1", "username=demo_annotator")
+    assert response.status == 503
+    assert response.json() == examples_for(get, "503")["storage_unavailable"]["value"]

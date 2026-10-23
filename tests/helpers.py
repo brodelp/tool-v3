@@ -11,6 +11,7 @@ from collections.abc import Iterable, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from scat_validator.api import app
 
@@ -175,3 +176,21 @@ def issues_of(response: RawResponse) -> list[tuple[str, str]]:
 def checks_of(response: RawResponse, index: int = 0) -> dict[str, str]:
     checks: dict[str, str] = response.json()["records"][index]["checks"]
     return checks
+
+
+def submit(body: bytes | str, query: bytes | str = b"", **kwargs: Any) -> RawResponse:
+    raw = body.encode() if isinstance(body, str) else body
+    return call("POST", "/api/v1/submissions", body=raw, query=query, **kwargs)
+
+
+def username_query(username: str) -> str:
+    return "username=" + quote(username, safe="")
+
+
+def export(case_id: str, query: bytes | str) -> RawResponse:
+    """GET a submission; ``query`` is the raw query string (see :func:`username_query`)."""
+    return call("GET", f"/api/v1/submissions/{case_id}", query=query, headers=[])
+
+
+def delete(case_id: str, query: bytes | str) -> RawResponse:
+    return call("DELETE", f"/api/v1/submissions/{case_id}", query=query, headers=[])

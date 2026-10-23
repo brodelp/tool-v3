@@ -1,4 +1,4 @@
-"""Explicit OpenAPI documentation for the manually decoded validation endpoints (spec §9)."""
+"""Explicit OpenAPI documentation for the manually decoded endpoints (stage 1 §9, stage 2 §3)."""
 
 from typing import Any, Final
 
@@ -18,7 +18,17 @@ from scat_validator.config import (
     MAX_RESPONSE_BYTES,
     MAX_SAFE_NUMBER,
 )
-from scat_validator.contracts import BatchEnvelope, Record, RequestFailure, ValidationReport
+from scat_validator.contracts import (
+    BatchEnvelope,
+    CaseId,
+    Record,
+    RequestFailure,
+    SubmissionExport,
+    SubmissionFailure,
+    SubmissionReceipt,
+    Username,
+    ValidationReport,
+)
 
 _REF: Final = "#/components/schemas/{model}"
 
@@ -27,6 +37,9 @@ _SCHEMA_INPUTS: Final = [
     ("BatchEnvelope", BatchEnvelope),
     ("ValidationReport", ValidationReport),
     ("RequestFailure", RequestFailure),
+    ("SubmissionReceipt", SubmissionReceipt),
+    ("SubmissionExport", SubmissionExport),
+    ("SubmissionFailure", SubmissionFailure),
 ]
 
 
@@ -344,5 +357,223 @@ def operation_extra(mode: str) -> dict[str, Any]:
                 "headers": _NO_STORE_HEADER,
                 "content": _json_content(failure, {}),
             },
+        },
+    }
+
+
+# ---------------------------------------------------------------- stage 2: submissions
+
+EXAMPLE_SUBMITTED_AT: Final = "2026-10-23T14:05:09.123456Z"
+EXAMPLE_LOCATION: Final = "/api/v1/submissions/12345678-1?username=demo_annotator"
+
+EXAMPLE_RECEIPT: Final[dict[str, Any]] = {
+    "case_id": "12345678-1",
+    "username": "demo_annotator",
+    "submitted_at": EXAMPLE_SUBMITTED_AT,
+    "report": EXAMPLE_SINGLE_REPORT,
+}
+EXAMPLE_EXPORT: Final[dict[str, Any]] = {
+    "case_id": "12345678-1",
+    "username": "demo_annotator",
+    "submitted_at": EXAMPLE_SUBMITTED_AT,
+    "offset_unit": "unicode-code-point",
+    "record": EXAMPLE_RECORD,
+}
+
+
+def example_submission_failure(code: str, message: str, issues: list[Any]) -> dict[str, Any]:
+    return {
+        "error": {"code": code, "message": message},
+        "issues": issues,
+        "issue_count": len(issues),
+        "omitted_issue_count": 0,
+    }
+
+
+EXAMPLE_NOT_FOUND: Final = example_submission_failure(
+    "NOT_FOUND", "No submission exists for this case_id and username.", []
+)
+EXAMPLE_MISSING_USERNAME: Final = example_submission_failure(
+    "INVALID_PARAMETERS",
+    "The path or query parameters are invalid.",
+    [
+        {
+            "location": "query",
+            "path": "/username",
+            "code": "REQUIRED_FIELD",
+            "message": "The username query parameter is required.",
+        }
+    ],
+)
+EXAMPLE_STORAGE_UNAVAILABLE: Final = example_submission_failure(
+    "STORAGE_UNAVAILABLE", "Submission storage is unavailable.", []
+)
+
+_NO_AUTH_NOTE: Final = (
+    "**Prototype:** there is no authentication. `username` is an unverified claim, so anyone who "
+    "can reach the service can act on any submission."
+)
+
+_SUBMIT_DESCRIPTION: Final = f"""
+Validates one record exactly as `POST /api/v1/validate` does (same gates, order, and report)
+and, when it is valid, stores it under `(case_id, username)`. Nothing is stored on any failure.
+
+- **No query parameters** are accepted (`echo` included): any parameter is 422
+  `INVALID_OPTIONS`. Export the submission to read the stored record back.
+- A second submission with the same `(case_id, username)` is 409 `ALREADY_SUBMITTED`; the stored
+  record is not changed. Delete it first to replace it. Exact strings are compared, so
+  usernames differing only in case are different users.
+- Validation runs before storage, so an invalid record gets its 422 report even while the
+  database is unavailable; a valid record then gets 503 `STORAGE_UNAVAILABLE`.
+- `Location` names the export URL, with the username percent-encoded.
+
+{_NO_AUTH_NOTE}
+{_LIMITS_DESCRIPTION}"""
+
+_LOOKUP_DESCRIPTION: Final = f"""
+Identifies one submission by the `case_id` path segment and the `username` query parameter.
+Both are compared as exact strings and must satisfy the record syntax. `username` is a query
+parameter because valid usernames can contain `/`, `?`, `#`, and `%`. Percent-encode it, and
+send `+` as `%2B`, since `+` decodes to a space.
+
+Parameters are checked before storage: problems are 422 `INVALID_PARAMETERS` with one issue per
+problem (`location` `path` or `query`), never 404. Only `username` is accepted, exactly once.
+
+{_NO_AUTH_NOTE}
+"""
+
+_LOCATION_HEADER: Final = {
+    "Location": {
+        "description": "Export URL of the new submission.",
+        "schema": {"type": "string"},
+    }
+}
+
+
+def _identity_parameters() -> list[dict[str, Any]]:
+    case_id_schema = TypeAdapter(CaseId).json_schema()
+    username_schema = TypeAdapter(Username).json_schema()
+    return [
+        {
+            "name": "case_id",
+            "in": "path",
+            "required": True,
+            "schema": case_id_schema,
+            "description": "Exact `case_id` of the stored record.",
+        },
+        {
+            "name": "username",
+            "in": "query",
+            "required": True,
+            "schema": username_schema,
+            "description": (
+                "Exact `username` of the stored record, percent-encoded (`+` as `%2B`). Required "
+                "exactly once; no other query parameter is accepted."
+            ),
+            "examples": {"handle": {"value": "demo_annotator"}},
+        },
+    ]
+
+
+def _response(
+    description: str,
+    schema_name: str | None,
+    examples: dict[str, Any] | None = None,
+    *,
+    extra_headers: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "description": description,
+        "headers": _NO_STORE_HEADER | (extra_headers or {}),
+    }
+    if schema_name is not None:
+        response["content"] = _json_content(_ref(schema_name), examples or {})
+    return response
+
+
+def submit_operation_extra() -> dict[str, Any]:
+    extra = operation_extra("single")
+    responses = extra["responses"]
+    del responses["200"]  # a stored submission is 201
+    responses["201"] = _response(
+        "Valid and stored.",
+        "SubmissionReceipt",
+        {"minimal_record": EXAMPLE_RECEIPT},
+        extra_headers=_LOCATION_HEADER,
+    )
+    responses["409"] = _response(
+        "`ALREADY_SUBMITTED` (RequestFailure): this (case_id, username) is already stored.",
+        "RequestFailure",
+    )
+    responses["503"] = _response(
+        "`STORAGE_UNAVAILABLE` (RequestFailure): valid, but the database is unreachable.",
+        "RequestFailure",
+    )
+    responses["422"]["content"]["application/json"]["examples"] = {
+        "query_parameter": {
+            "value": _failure_example(
+                "single",
+                "INVALID_OPTIONS",
+                "The query options are invalid.",
+                [
+                    {
+                        "location": "query",
+                        "path": "/echo",
+                        "code": "UNKNOWN_QUERY_PARAMETER",
+                        "message": "This endpoint accepts no query parameters.",
+                    }
+                ],
+            )
+        }
+    }
+    extra["description"] = _SUBMIT_DESCRIPTION
+    extra["parameters"] = []
+    return extra
+
+
+def _lookup_responses() -> dict[str, Any]:
+    return {
+        "404": _response(
+            "`NOT_FOUND`: no submission for this (case_id, username).",
+            "SubmissionFailure",
+            {"not_found": EXAMPLE_NOT_FOUND},
+        ),
+        "422": _response(
+            "`INVALID_PARAMETERS`: a malformed `case_id` or `username`, or another parameter.",
+            "SubmissionFailure",
+            {"missing_username": EXAMPLE_MISSING_USERNAME},
+        ),
+        "500": _response("`INTERNAL_ERROR`.", "SubmissionFailure"),
+        "503": _response(
+            "`STORAGE_UNAVAILABLE`: the database is unreachable or not configured.",
+            "SubmissionFailure",
+            {"storage_unavailable": EXAMPLE_STORAGE_UNAVAILABLE},
+        ),
+    }
+
+
+def export_operation_extra() -> dict[str, Any]:
+    return {
+        "description": _LOOKUP_DESCRIPTION
+        + "\nReturns the whole stored record byte for byte (foreign metadata and exact numeric "
+        "tokens included) inside an envelope that adds `submitted_at` and `offset_unit`.",
+        "parameters": _identity_parameters(),
+        "responses": {
+            "200": _response(
+                "The stored submission.", "SubmissionExport", {"minimal_record": EXAMPLE_EXPORT}
+            ),
+            **_lookup_responses(),
+        },
+    }
+
+
+def delete_operation_extra() -> dict[str, Any]:
+    return {
+        "description": _LOOKUP_DESCRIPTION
+        + "\nDeletes permanently; there is no undo or tombstone.",
+        "parameters": _identity_parameters(),
+        "responses": {
+            "204": _response("Deleted. No body.", None),
+            **_lookup_responses(),
         },
     }

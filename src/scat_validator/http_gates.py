@@ -71,20 +71,29 @@ def _decode_component(raw: bytes) -> str:
     return unquote_to_bytes(raw.replace(b"+", b" ")).decode("utf-8", errors="surrogateescape")
 
 
-def parse_query(query_string: bytes) -> QueryOptions | IssueCollector:
-    """Gate 4: only ``echo``, at most once, with a documented boolean spelling."""
+def decode_query(query_string: bytes) -> list[tuple[str, str]]:
+    """``application/x-www-form-urlencoded`` pairs in order; empty segments are ignored."""
     pairs: list[tuple[str, str]] = []
     for segment in query_string.split(b"&"):
         if not segment:
             continue
         raw_name, _, raw_value = segment.partition(b"=")
         pairs.append((_decode_component(raw_name), _decode_component(raw_value)))
+    return pairs
 
+
+def parse_query(query_string: bytes, *, echo_allowed: bool = True) -> QueryOptions | IssueCollector:
+    """Gate 4: only ``echo``, at most once, with a documented boolean spelling.
+
+    With ``echo_allowed=False`` (submissions) every parameter is unknown.
+    """
+    pairs = decode_query(query_string)
     issues = IssueCollector()
     root = PathNode.root()
+    unknown_message = Msg.UNKNOWN_QUERY if echo_allowed else Msg.NO_QUERY
     echo = False
     for name in sorted({name for name, _ in pairs}):
-        if name == "echo":
+        if name == "echo" and echo_allowed:
             values = [value for n, value in pairs if n == name]
             if len(values) > 1:
                 issues.add(
@@ -99,5 +108,5 @@ def parse_query(query_string: bytes) -> QueryOptions | IssueCollector:
         elif contains_forbidden_code_point(name):
             issues.add("query", root, "UNSUPPORTED_UNICODE", Msg.UNSUPPORTED_QUERY_NAME)
         else:
-            issues.add("query", root.child(name), "UNKNOWN_QUERY_PARAMETER", Msg.UNKNOWN_QUERY)
+            issues.add("query", root.child(name), "UNKNOWN_QUERY_PARAMETER", unknown_message)
     return issues if issues.count else QueryOptions(echo=echo)

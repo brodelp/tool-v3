@@ -35,6 +35,10 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "INVALID_OPTIONS": "The query options are invalid.",
     "INVALID_DOCUMENT": "The request document is invalid.",
     "INTERNAL_ERROR": "An unexpected internal error occurred.",
+    "ALREADY_SUBMITTED": "A submission for this case_id and username already exists.",
+    "STORAGE_UNAVAILABLE": "Submission storage is unavailable.",
+    "INVALID_PARAMETERS": "The path or query parameters are invalid.",
+    "NOT_FOUND": "No submission exists for this case_id and username.",
 }
 REPORT_INVALID_MESSAGE: Final = "One or more records are invalid."
 
@@ -47,6 +51,10 @@ HTTP_STATUS: Final[dict[ErrorCode, int]] = {
     "INVALID_OPTIONS": 422,
     "INVALID_DOCUMENT": 422,
     "INTERNAL_ERROR": 500,
+    "ALREADY_SUBMITTED": 409,
+    "STORAGE_UNAVAILABLE": 503,
+    "INVALID_PARAMETERS": 422,
+    "NOT_FOUND": 404,
 }
 
 
@@ -60,6 +68,7 @@ class Outcome:
     body: bytes
     record_count: int | None
     issue_count: int
+    location: str | None = None  # Location header of a 201 response
 
 
 def _error(code: ErrorCode, message: str | None = None) -> ErrorInfo:
