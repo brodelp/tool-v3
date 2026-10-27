@@ -23,6 +23,9 @@ services:
       - .:/app:cached
       # Claude Code login and settings survive container rebuilds.
       - claude-config:/home/vscode/.claude
+      # npm needs symlinks (node_modules/.bin), which a Windows bind mount cannot hold, and a
+      # Linux volume is much faster. The Dockerfile pre-creates this path owned by vscode.
+      - frontend-node-modules:/app/frontend/node_modules
     # VS Code forwards 8000 instead, so the dev container can coexist with `docker compose up`.
     ports: !reset []
     healthcheck:
@@ -30,3 +33,4 @@ services:
 
 volumes:
   claude-config:
+  frontend-node-modules:

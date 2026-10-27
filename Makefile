@@ -1,7 +1,8 @@
 # Named commands; run inside the dev container (terminal at /app).
 # Compose commands run on the host; see README.md.
 
-.PHONY: fmt lint typecheck test check run smoke lock psql db-wait migrate
+.PHONY: fmt lint typecheck test check run smoke lock psql db-wait migrate \
+	labels web-install web-dev web-build web-test web-lint web-check serve
 
 fmt:
 	uv run --locked ruff format .
@@ -17,7 +18,7 @@ typecheck:
 test:
 	uv run --locked pytest
 
-check: lint typecheck test
+check: lint typecheck test web-check
 
 # --no-access-log: uvicorn's access log would record query values; the app logs route,
 # status, duration, and counts instead.
@@ -45,3 +46,33 @@ migrate:
 db-wait:
 	@for i in $$(seq 30); do pg_isready --quiet && exit 0; sleep 1; done; \
 	echo "PostgreSQL at $$PGHOST:$$PGPORT is not ready" >&2; exit 1
+
+# ---------------------------------------------------------------- frontend (stage 3)
+# npm runs in frontend/; node_modules lives in a dev container volume (see compose.devcontainer.yaml).
+
+# Regenerate frontend/src/generated/labels.ts after changing LABELS in config.py.
+labels:
+	uv run --locked python scripts/generate_frontend_labels.py
+
+web-install:
+	cd frontend && npm ci --no-audit --no-fund
+
+# Vite dev server on 0.0.0.0:5173, proxying /api to `make run` on port 8000.
+web-dev:
+	cd frontend && npm run dev
+
+web-build:
+	cd frontend && npm run build
+
+web-test:
+	cd frontend && npm test
+
+web-lint:
+	cd frontend && npm run lint
+	cd frontend && npm run typecheck
+
+web-check: web-lint web-test
+
+# The API serving the built frontend at / on port 8000, as the Compose image does.
+serve: web-build
+	SCAT_WEB_DIR=frontend/dist uv run --locked uvicorn scat_validator.api:app --host 0.0.0.0 --port 8000 --no-access-log
