@@ -186,11 +186,13 @@ export fields above. The receipt body is unchanged.
 - Offsets are Unicode code points (stage 1 §3.3). The frontend converts between code points and
   the browser's UTF-16 positions; an astral character counts as one code point.
 - `text` is always the exact narrative slice at the annotation's offsets.
-- Annotations loaded from the export keep their foreign properties. JSON is parsed and serialized
-  losslessly, so numeric tokens such as `1.0E2` or `12345678901234567890` survive a save.
-- Annotations without foreign properties are serialized as `{"text", "start", "end"}`, labels in
-  canonical order, annotations in `(start, end)` order within each label for new ones; loaded
-  annotations keep their relative order.
+- An annotation loaded from the export is sent back as its **exact source text**: its foreign
+  properties, number tokens (such as `1.0E2` or `12345678901234567890`), escapes, key order, and
+  whitespace survive a save, also after a relabel (the label is the map key, not part of the
+  object). The UI never changes a loaded annotation's text or range.
+- New annotations are serialized as `{"text","start","end"}`. The map lists labels in canonical
+  order; within a label, loaded annotations come first in their loaded order, then new ones by
+  `(start, end)`. Labels without annotations are omitted.
 
 ### 5. Logging and privacy
 

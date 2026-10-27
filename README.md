@@ -1,7 +1,8 @@
 # SCAT validator (tool-v3)
 
 A prototype of the Safety Concepts Annotation Tool: a small FastAPI service for fictional case
-records, used to narrow requirements for a formal application. There is no frontend.
+records, with a browser frontend for annotating them, used to narrow requirements for a formal
+application.
 
 - **Stage 1** validates records, explains what it understood, and, on request, echoes the exact
   decoded input. Contract: [docs/scat-validation-endpoint-spec.md](docs/scat-validation-endpoint-spec.md)
@@ -10,9 +11,15 @@ records, used to narrow requirements for a formal application. There is no front
 - **Stage 2** stores one validated record per `(case_id, username)` in PostgreSQL, exports it
   byte for byte, and deletes it. Contract:
   [docs/scat-stage-2-submission-spec.md](docs/scat-stage-2-submission-spec.md) (revision 0.1).
+- **Stage 3** adds a React + TypeScript annotation frontend (`frontend/`), served by the API at
+  `/`. It lists a username's stored cases, shows each narrative in pages sized to the screen, and
+  saves annotations made by selecting text and choosing a label. Saving replaces the stored
+  record's annotations, guarded by a version number. Contract:
+  [docs/scat-stage-3-annotation-frontend-spec.md](docs/scat-stage-3-annotation-frontend-spec.md)
+  (revision 0.1). Case data still enters only through `POST /api/v1/submissions`.
 
 > **No authentication.** `username` is an unverified claim: anyone who can reach the service can
-> submit, export, or delete any submission. Use fictional data only; the service is published on
+> submit, list, export, annotate, or delete any submission. Use fictional data only; the service is published on
 > loopback only.
 
 | Endpoint | Purpose |
@@ -20,10 +27,13 @@ records, used to narrow requirements for a formal application. There is no front
 | `POST /api/v1/validate` | Validate one record object |
 | `POST /api/v1/validate-batch` | Validate `{"records": [...]}` with 1–100 entries |
 | `POST /api/v1/submissions` | Validate one record and store it (201; 409 if that `(case_id, username)` exists) |
-| `GET /api/v1/submissions/{case_id}?username=…` | Export one stored record, wrapped with `submitted_at` and `offset_unit` |
+| `GET /api/v1/submissions?username=…` | List one username's submissions (case IDs, timestamps, versions) |
+| `GET /api/v1/submissions/{case_id}?username=…` | Export one stored record, wrapped with `submitted_at`, `updated_at`, `version`, and `offset_unit`; `ETag` names the version |
+| `PUT /api/v1/submissions/{case_id}/annotations?username=…` | Replace the record's annotations (`If-Match` required; 412 if the version changed) |
 | `DELETE /api/v1/submissions/{case_id}?username=…` | Permanently delete one stored record (204) |
 | `GET /healthz` | Liveness: exactly `{"status":"ok"}` (no database check) |
 | `GET /docs`, `GET /openapi.json` | Interactive documentation and the OpenAPI contract |
+| `GET /` | The annotation frontend (when built; always in the Compose image) |
 
 Both validation endpoints accept the optional query `echo=true` (also `1`, `on`, `yes`, `t`, `y`, any case;
 false spellings `false`, `0`, `off`, `no`, `f`, `n`). No other query parameter is accepted.
@@ -56,9 +66,11 @@ A record needs only three fields. A narrative without annotations is the default
 | --- | --- | --- |
 | CPython | 3.14.8 (`python:3.14.8-slim-trixie`) | `Dockerfile`, `requires-python` in `pyproject.toml` |
 | uv | 0.13.1 | `Dockerfile` |
+| Node.js | 24.22.1 LTS (`node:24.22.1-trixie-slim`), npm 11 | `Dockerfile`, `engines` in `frontend/package.json` |
 | PostgreSQL | 18.6 server (`postgres:18.6-trixie`); `psql` 18 client from the PostgreSQL apt repository (dev container only) | `compose.yaml`, `POSTGRES_CLIENT_MAJOR` in `Dockerfile` |
 | Claude Code | `stable` channel at build time, auto-updater off (dev container only) | `CLAUDE_CODE_VERSION` in `Dockerfile` |
 | Dependencies | exact versions (FastAPI, Pydantic v2, uvicorn, email-validator, SQLAlchemy 2.1, psycopg 3, Alembic; ruff, mypy, pytest, httpx) | `pyproject.toml` + `uv.lock` |
+| Frontend dependencies | exact versions (React 19, Vite 8, TypeScript 6, Vitest 5, ESLint 10, self-hosted fonts) | `frontend/package.json` + `frontend/package-lock.json` |
 
 You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code are enough.
 
@@ -75,8 +87,9 @@ You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code a
 
 1. In VS Code: **File → Open Folder…** and select `tool-v3`.
 2. Command Palette (`Ctrl+Shift+P`) → **Dev Containers: Reopen in Container**.
-   The first build takes a few minutes; `postCreateCommand` then runs `uv sync --locked` and
-   applies the database migrations (`make migrate`).
+   The first build takes a few minutes; `postCreateCommand` then runs `uv sync --locked`,
+   installs the frontend packages (`make web-install`), and applies the database migrations
+   (`make migrate`).
 3. Open a terminal in VS Code (it opens inside the container at `/app`) and use:
 
 | Command | Purpose |
@@ -85,13 +98,19 @@ You don't need Python, uv, Node, or PostgreSQL on the host. Docker and VS Code a
 | `make lint` | Check formatting and lint (ruff) |
 | `make typecheck` | Strict type checking (mypy) |
 | `make test` | Run all tests (pytest; needs the `db` service, see [Database](#database)) |
-| `make check` | lint + typecheck + test |
+| `make check` | lint + typecheck + test, then the frontend checks (`make web-check`) |
 | `make run` | Start the API with auto-reload on `0.0.0.0:8000` |
 | `make smoke` | Smoke-test a running server (default `http://127.0.0.1:8000`; override with `BASE_URL=...`) |
 | `make lock` | Re-resolve `uv.lock` after editing dependencies in `pyproject.toml` |
 | `make psql` | Open `psql` on the dev container's database |
 | `make migrate` | Apply database migrations (Alembic) to the dev container's database |
 | `make db-wait` | Wait up to 30 s for the database to accept connections |
+| `make web-dev` | Frontend dev server on port 5173 with hot reload, proxying `/api` to `make run` |
+| `make web-test`, `make web-lint` | Frontend tests (Vitest), and ESLint + `tsc` |
+| `make web-build` | Build the frontend into `frontend/dist` |
+| `make serve` | Build the frontend and serve it from the API on port 8000, as Compose does |
+| `make labels` | Regenerate `frontend/src/generated/labels.ts` after changing `LABELS` in `config.py` |
+| `make web-install` | Reinstall the locked frontend packages (`npm ci`) |
 
 To smoke-test the real server: run `make run` in one container terminal and `make smoke` in a
 second one. While `make run` is active, VS Code forwards port 8000 to the host (usually
@@ -101,6 +120,9 @@ The dev container also includes `gh`, `ripgrep`, and Claude Code. Run `claude` i
 terminal and log in once: login and settings live in the `claude-config` volume, so they survive
 rebuilds. Project guidance for Claude is in `CLAUDE.md`, and shared permissions are in
 `.claude/settings.json` (personal overrides go in the git-ignored `.claude/settings.local.json`).
+
+`frontend/node_modules` lives in the `frontend-node-modules` volume rather than in the bind
+mount: npm needs symlinks there, which a Windows folder cannot hold, and the volume is faster.
 
 After changing `Dockerfile`, `compose.yaml`, `.devcontainer/`, or `.env`, run
 **Dev Containers: Rebuild Container**.
@@ -116,6 +138,7 @@ docker compose up --build
 The service listens on `0.0.0.0:8000` inside the container and is published only on
 `127.0.0.1:8000` on the host.
 
+- Annotation frontend: <http://localhost:8000/>
 - Health: <http://localhost:8000/healthz> → `{"status":"ok"}`
 - Interactive API docs: <http://localhost:8000/docs>
 - OpenAPI: <http://localhost:8000/openapi.json>
@@ -132,8 +155,9 @@ PostgreSQL 18.6 runs as the `db` Compose service, for both the dev container and
 When the database is unreachable (or `DATABASE_URL` is unset), the submission routes answer
 `503 STORAGE_UNAVAILABLE`.
 
-- **Schema**: one `submissions` table (`case_id`, `username`, the exact record text, and
-  `submitted_at`, unique on `(case_id, username)`), created by Alembic migrations in
+- **Schema**: one `submissions` table (`case_id`, `username`, the exact current record text, the
+  record as first submitted, `submitted_at`, `updated_at`, and `version`, unique on
+  `(case_id, username)`), created by Alembic migrations in
   `src/scat_validator/migrations/`. Compose applies them when `api` starts; in the dev container
   they run on create, and `make migrate` applies new ones. A new migration:
   `uv run --locked alembic revision -m "<message>"`, then mirror it in `storage.py`
@@ -217,6 +241,24 @@ and `reviewer@example.com` are different users. Submissions accept no query para
 included); the export returns the whole record exactly as validated, with foreign metadata and
 exact numeric tokens.
 
+### Annotating in the browser
+
+1. Store a case through the API (for example the first command under [Submissions](#submissions)).
+2. Open the frontend: <http://localhost:8000/> with `docker compose up` or `make serve`; or run
+   `make run` and `make web-dev` together in the dev container and open port 5173.
+3. Enter the username the case was submitted under (`demo_annotator` for the examples) and open
+   the case.
+4. Select text with the mouse and choose a label (type to filter, Enter to pick). To annotate
+   across a page break, select the start, go to the next page, and Shift+click where it ends.
+   Click a highlight to change its label or delete it. Overlapping annotations each get their
+   own stripe under the text; the list on the right shows every annotation by label.
+5. **Save** (or Ctrl+S) stores the annotations; export the case to see them in the record. If the
+   case was saved elsewhere meanwhile, the app asks you to reload it.
+
+Pages follow the size of the reading area, so resizing the window or zooming moves the page
+breaks; offsets never change. jsdom tests cannot measure real layout, so after changing page
+styles, check pagination, stripes, and the popups in a browser.
+
 ## Project layout
 
 | Path | Responsibility |
@@ -230,10 +272,14 @@ exact numeric tokens.
 | `src/scat_validator/contracts.py`, `openapi_docs.py` | Pydantic schemas, shared strict field types, explicit OpenAPI |
 | `src/scat_validator/api.py` | Thin routes, gate order, status codes, `Cache-Control: no-store`, logging, storage lifespan |
 | `src/scat_validator/submissions.py` | Submission identity parameters (`case_id` path, `username` query) and receipt/export/failure bodies |
+| `src/scat_validator/updates.py` | Annotation-update body shape, byte-exact splicing of the map into the stored record, entity tags |
 | `src/scat_validator/storage.py`, `migrations/` | PostgreSQL `submissions` table (SQLAlchemy Core, psycopg 3) and its Alembic migrations |
+| `frontend/src/lib/` | Frontend logic without React: code-point offsets, annotations and their exact serialization, pagination, segments, API client |
+| `frontend/src/components/`, `hooks/` | The annotator (page, label picker, inspector, panel), case list, and the measuring pagination hook |
+| `frontend/src/generated/labels.ts` | Label keys generated from `config.py` (`make labels`) |
 | `tests/` | Raw-byte ASGI tests, pure unit tests, raw byte fixtures in `tests/fixtures/raw/`, and database fixtures (`conftest.py`) |
 | `scripts/smoke_test.py` | Real-server smoke test (standard library only) |
-| `docs/acceptance-mapping.md` | V01–V22 and S01–S10 mapped to tests and commands |
+| `docs/acceptance-mapping.md` | V01–V22, S01–S10, and F01–F14 mapped to tests and commands |
 | `docs/implementation-decisions.md` | Implementation choices the spec leaves open |
 
 ## Fixtures and line endings
@@ -243,6 +289,9 @@ the host's `core.autocrlf`. It also treats `tests/fixtures/raw/**` as binary so 
 fixtures (BOMs, malformed UTF-8, exact numeric tokens, duplicate names) are never rewritten.
 
 ## Logging
+
+The frontend never writes narratives, annotations, or usernames to the browser console (ESLint
+forbids `console`), and the app does not log requests for its static files.
 
 The app logs one line per request to its API routes: method, route template (for example
 `GET /api/v1/submissions/{case_id}`), status, duration, record count, and issue count. Uvicorn's
