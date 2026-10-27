@@ -1,7 +1,9 @@
-"""PostgreSQL storage for submitted records (stage 2 spec §4).
+"""PostgreSQL storage for submitted records (stage 2 spec §4, stage 3 spec §2).
 
 Database entities live here, separate from the API contracts. Records are stored as the exact
 validated JSON text; ``jsonb`` would rewrite number spellings, key order, and whitespace.
+``source_json`` is the current record (what export returns); ``original_json`` is the record as
+first submitted and never changes.
 """
 
 import os
@@ -24,6 +26,8 @@ from sqlalchemy import (
     delete,
     func,
     select,
+    text,
+    update,
 )
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import make_url
@@ -48,6 +52,9 @@ submissions = Table(
     Column("username", Text, nullable=False),
     Column("source_json", Text, nullable=False),
     Column("submitted_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("original_json", Text, nullable=False),
+    Column("version", BigInteger, nullable=False, server_default=text("1")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     UniqueConstraint("case_id", "username", name="submissions_case_id_username_key"),
     CheckConstraint(
         f"char_length(case_id) BETWEEN 1 AND {MAX_CASE_ID_CHARS}",
@@ -57,6 +64,7 @@ submissions = Table(
         f"char_length(username) BETWEEN 1 AND {MAX_USERNAME_CHARS}",
         name="submissions_username_length",
     ),
+    CheckConstraint("version >= 1", name="submissions_version_positive"),
 )
 
 # Failures that mean "the database cannot be reached", answered with 503 rather than 500.
@@ -85,6 +93,18 @@ class StoredSubmission:
     username: str
     source_json: str
     submitted_at: datetime
+    updated_at: datetime
+    version: int
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionVersion:
+    """Timestamps and version of one stored submission, without its record."""
+
+    case_id: str
+    submitted_at: datetime
+    updated_at: datetime
+    version: int
 
 
 class Storage:
@@ -102,7 +122,12 @@ class Storage:
         """Store a new submission; ``None`` when ``(case_id, username)`` already exists."""
         statement = (
             insert(submissions)
-            .values(case_id=case_id, username=username, source_json=source_json)
+            .values(
+                case_id=case_id,
+                username=username,
+                source_json=source_json,
+                original_json=source_json,
+            )
             .on_conflict_do_nothing(index_elements=["case_id", "username"])
             .returning(submissions.c.submitted_at)
         )
@@ -116,10 +141,55 @@ class Storage:
             submissions.c.username,
             submissions.c.source_json,
             submissions.c.submitted_at,
+            submissions.c.updated_at,
+            submissions.c.version,
         ).where(submissions.c.case_id == case_id, submissions.c.username == username)
         with self.engine.connect() as connection:
             row = connection.execute(statement).one_or_none()
         return None if row is None else StoredSubmission(*row)
+
+    def list_for(self, username: str) -> list[SubmissionVersion]:
+        """All submissions of one username, by ``case_id`` in code-point (byte) order."""
+        statement = (
+            select(
+                submissions.c.case_id,
+                submissions.c.submitted_at,
+                submissions.c.updated_at,
+                submissions.c.version,
+            )
+            .where(submissions.c.username == username)
+            .order_by(submissions.c.case_id.collate("C"))
+        )
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement).all()
+        return [SubmissionVersion(*row) for row in rows]
+
+    def update_record(
+        self, case_id: str, username: str, expected_version: int, source_json: str
+    ) -> SubmissionVersion | None:
+        """Replace the current record if it is still at ``expected_version``; else ``None``."""
+        statement = (
+            update(submissions)
+            .where(
+                submissions.c.case_id == case_id,
+                submissions.c.username == username,
+                submissions.c.version == expected_version,
+            )
+            .values(
+                source_json=source_json,
+                version=submissions.c.version + 1,
+                updated_at=func.now(),
+            )
+            .returning(
+                submissions.c.case_id,
+                submissions.c.submitted_at,
+                submissions.c.updated_at,
+                submissions.c.version,
+            )
+        )
+        with self.engine.begin() as connection:
+            row = connection.execute(statement).one_or_none()
+        return None if row is None else SubmissionVersion(*row)
 
     def delete(self, case_id: str, username: str) -> bool:
         """Hard-delete one submission; ``False`` when none existed."""

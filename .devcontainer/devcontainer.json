@@ -5,10 +5,11 @@
   "workspaceFolder": "/app",
   "remoteUser": "vscode",
   "shutdownAction": "stopCompose",
-  "postCreateCommand": "git config --global --add safe.directory /app && uv sync --locked && make db-wait && make migrate",
-  "forwardPorts": [8000, "db:5432"],
+  "postCreateCommand": "git config --global --add safe.directory /app && uv sync --locked && make web-install && make db-wait && make migrate",
+  "forwardPorts": [8000, 5173, "db:5432"],
   "portsAttributes": {
     "8000": { "label": "SCAT API", "onAutoForward": "notify" },
+    "5173": { "label": "SCAT frontend (Vite)", "onAutoForward": "notify" },
     "db:5432": { "label": "PostgreSQL", "onAutoForward": "silent" }
   },
   "customizations": {
@@ -18,6 +19,7 @@
         "ms-python.vscode-pylance",
         "ms-python.mypy-type-checker",
         "charliermarsh.ruff",
+        "dbaeumer.vscode-eslint",
         "anthropic.claude-code"
       ],
       "settings": {

@@ -19,6 +19,8 @@
   "enabledPlugins": {
     "superpowers@anthropic-plugin-directory": true,
     "pyright-lsp@claude-plugins-official": true,
-    "code-simplifier@anthropic-plugin-directory": true
+    "code-simplifier@anthropic-plugin-directory": true,
+    "frontend-design@anthropic-plugin-directory": true,
+    "typescript-lsp@claude-plugins-official": true
   }
 }

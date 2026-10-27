@@ -145,6 +145,7 @@ def main() -> None:
         "/api/v1/validate-batch",
         "/api/v1/submissions",
         "/api/v1/submissions/{case_id}",
+        "/api/v1/submissions/{case_id}/annotations",
     }
     check(
         "GET /openapi.json documents every endpoint",
@@ -158,7 +159,10 @@ def main() -> None:
 
 
 def submissions(server: Server) -> None:
-    """Submit, export, and delete one record under a fresh case_id (needs a migrated database)."""
+    """Submit, export, list, update, and delete one record under a fresh case_id.
+
+    Needs a migrated database.
+    """
     case_id = f"smoke{secrets.token_hex(4)}-1"
     username = "smoke+test@example.com"
     record = (
@@ -184,6 +188,34 @@ def submissions(server: Server) -> None:
         and headers.get("cache-control") == "no-store"
         and body.endswith(b',"record":' + record + b"}"),
     )
+    check("export ETag names version 1", headers.get("etag") == '"1"')
+
+    listing_path = f"/api/v1/submissions?username={quote(username, safe='')}"
+    status, _, body = server.request("GET", listing_path)
+    listed = (
+        [entry["case_id"] for entry in json.loads(body)["submissions"]] if status == 200 else []
+    )
+    check("list -> 200 including the submission", case_id in listed)
+
+    update_path = f"/api/v1/submissions/{case_id}/annotations?username={quote(username, safe='')}"
+    new_map = b'{"SDrug":[{"text":"Aspirin","start":0,"end":7,"weight":1.0E2}]}'
+    update = b'{"annotations":' + new_map + b"}"
+    status, headers, _ = server.request("PUT", update_path, update, JSON | {"If-Match": '"1"'})
+    check(
+        "annotation update -> 200 with ETag version 2",
+        status == 200 and headers.get("etag") == '"2"',
+    )
+    status, _, body = server.request("PUT", update_path, update, JSON | {"If-Match": '"1"'})
+    check(
+        "stale If-Match -> 412 VERSION_CONFLICT",
+        status == 412 and json.loads(body)["error"]["code"] == "VERSION_CONFLICT",
+    )
+    status, _, body = server.request("GET", lookup)
+    check(
+        "export after update -> only the annotations replaced, byte for byte",
+        status == 200 and b'"dose_mg": 1.2300, "annotations": ' + new_map + b"}}" in body,
+    )
+
     status, _, body = server.request("DELETE", lookup)
     check("delete -> 204 without a body", status == 204 and body == b"")
     status, _, _ = server.request("GET", lookup)

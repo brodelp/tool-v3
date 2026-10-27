@@ -182,6 +182,17 @@ class BatchEnvelope(BaseModel):
     records: list[Record] = Field(min_length=MIN_BATCH_RECORDS, max_length=MAX_BATCH_RECORDS)
 
 
+class AnnotationsUpdate(BaseModel):
+    """Closed annotation-update body (stage 3). The map replaces the stored record's
+    `annotations` value byte for byte and is validated against the stored narrative."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    annotations: AnnotationMap = Field(
+        description="The complete new annotation map; `{}` removes every annotation."
+    )
+
+
 # ---------------------------------------------------------------- response shapes
 
 type Mode = Literal["single", "batch"]
@@ -222,6 +233,8 @@ type ErrorCode = Literal[
     "STORAGE_UNAVAILABLE",
     "INVALID_PARAMETERS",
     "NOT_FOUND",
+    "PRECONDITION_REQUIRED",
+    "VERSION_CONFLICT",
 ]
 
 
@@ -401,6 +414,30 @@ SubmittedAt = Annotated[
 ]
 
 
+UpdatedAt = Annotated[
+    str,
+    Field(
+        json_schema_extra={"format": "date-time"},
+        description=(
+            "When the annotations were last saved, or `submitted_at` if never: RFC 3339 UTC with "
+            "microseconds and `Z`."
+        ),
+        examples=["2026-10-27T09:12:44.000001Z"],
+    ),
+]
+Version = Annotated[
+    int,
+    Field(
+        ge=1,
+        description=(
+            "Submission version: 1 when stored, incremented by each annotation update. Its entity "
+            'tag is the quoted decimal (`"2"`).'
+        ),
+        examples=[1],
+    ),
+]
+
+
 class SubmissionReceipt(TypedDict):
     """A stored submission (HTTP 201). `report` is the stage 1 report for the record."""
 
@@ -416,6 +453,8 @@ class SubmissionExport(TypedDict):
     case_id: str
     username: str
     submitted_at: SubmittedAt
+    updated_at: UpdatedAt
+    version: Version
     offset_unit: Annotated[
         OffsetUnit, Field(description="Coordinate unit of the record's annotation offsets.")
     ]
@@ -431,8 +470,41 @@ class SubmissionExport(TypedDict):
     ]
 
 
+class SubmissionUpdate(TypedDict):
+    """Saved annotations (HTTP 200). `report` is the stage 1 report for the updated record."""
+
+    case_id: str
+    username: str
+    submitted_at: SubmittedAt
+    updated_at: UpdatedAt
+    version: Version
+    report: ValidationReport
+
+
+class SubmissionSummary(TypedDict):
+    """One listed submission, without its record."""
+
+    case_id: str
+    submitted_at: SubmittedAt
+    updated_at: UpdatedAt
+    version: Version
+
+
+SubmissionSummary.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
+
+
+class SubmissionList(TypedDict):
+    """The submissions of one username, by `case_id` in code-point order."""
+
+    username: str
+    submissions: list[SubmissionSummary]
+
+
+SubmissionList.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
+
+
 class SubmissionFailure(TypedDict):
-    """Failure of an export or deletion. These routes validate no document."""
+    """Failure of a route addressed by identity (list, export, update, delete)."""
 
     error: ErrorInfo
     issues: IssueList
@@ -448,3 +520,5 @@ REQUEST_FAILURE_ADAPTER: Final[TypeAdapter[RequestFailure]] = TypeAdapter(Reques
 SUBMISSION_RECEIPT_ADAPTER: Final[TypeAdapter[SubmissionReceipt]] = TypeAdapter(SubmissionReceipt)
 SUBMISSION_EXPORT_ADAPTER: Final[TypeAdapter[SubmissionExport]] = TypeAdapter(SubmissionExport)
 SUBMISSION_FAILURE_ADAPTER: Final[TypeAdapter[SubmissionFailure]] = TypeAdapter(SubmissionFailure)
+SUBMISSION_UPDATE_ADAPTER: Final[TypeAdapter[SubmissionUpdate]] = TypeAdapter(SubmissionUpdate)
+SUBMISSION_LIST_ADAPTER: Final[TypeAdapter[SubmissionList]] = TypeAdapter(SubmissionList)

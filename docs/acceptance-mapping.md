@@ -1,4 +1,4 @@
-# Acceptance mapping (stage 1 §11, V01–V22; stage 2 §7, S01–S10)
+# Acceptance mapping (stage 1 §11, V01–V22; stage 2 §7, S01–S10; stage 3 §8, F01–F14)
 
 Every test below sends raw request bytes through the real decoder and ASGI app (`tests/helpers.py`),
 unless it is listed under `test_wire.py` / `test_validator_unit.py`, which exercise the pure decoder,
@@ -8,7 +8,8 @@ Commands (dev container, terminal at `/app`):
 
 | Purpose | Command |
 | --- | --- |
-| Everything below | `make check` (ruff format check + ruff lint + strict mypy + pytest) |
+| Everything below | `make check` (ruff format check + ruff lint + strict mypy + pytest + frontend ESLint, `tsc`, Vitest) |
+| Frontend only | `make web-check` |
 | One acceptance item | `uv run --locked pytest -q tests/<file>.py -k <test name>` |
 | Real listening server | `make run` in one terminal, `make smoke` in another (or `BASE_URL=... make smoke` against Compose) |
 
@@ -55,3 +56,26 @@ also send raw bytes through the real ASGI app.
 | S08 | No identities/values in logs; generic 500 on unexpected faults | `test_submissions.py`: `test_identities_and_values_never_logged`, `test_unexpected_storage_fault_is_generic_500`; `test_real_server.py` (log assertions) |
 | S09 | OpenAPI operations, parameters, statuses, schemas, examples equal runtime | `test_openapi.py`: `test_submission_operations_document_statuses_and_schemas`, `test_submission_failure_is_closed`, `test_submission_examples_match_runtime`, `test_response_variants` (error codes, `path` location) |
 | S10 | Migrations apply and match `storage.py`; real-server round trip | `test_submissions.py`: `test_migrations_match_table_definitions`, `test_migrations_downgrade_and_upgrade`; `test_real_server.py::test_smoke_script_against_real_server` (submit, 409, export, delete, 404); `make migrate` + `make run` + `make smoke`; Compose per README (environment-dependent) |
+
+## Stage 3 annotation frontend (F01–F14)
+
+Backend tests are in `tests/test_annotation_updates.py` (real PostgreSQL, raw bytes through the
+ASGI app). Frontend tests run with Vitest in `frontend/` (`make web-test`); pure modules are tested
+directly and components through React Testing Library with a character-count page measurer.
+
+| ID | Scenario | Tests |
+| --- | --- | --- |
+| F01 | Listing order, timestamps, versions, empty list, parameters, no content | `test_annotation_updates.py`: `test_list_orders_by_code_point_and_omits_content`, `test_list_of_unknown_username_is_empty`, `test_list_parameters`, `test_list_username_with_url_characters` |
+| F02 | Byte-exact replacement, insertion, original kept | `test_annotation_updates.py`: `test_update_replaces_only_the_annotations_member`, `test_update_inserts_a_missing_member`, `test_update_keeps_the_map_text_and_an_escaped_member_name`, `test_empty_map_removes_every_annotation`, `test_bom_in_update_body_is_not_stored`, `test_splice_annotations` |
+| F03 | Step order and every failure row | `test_annotation_updates.py`: `test_gate_failures_use_submission_failure`, `test_streamed_oversize_body_is_413`, `test_body_shape`, `test_steps_run_in_order`, `test_unknown_submission_is_404_before_the_version`, `test_wrong_or_malformed_if_match_is_412`, `test_repeated_if_match_header_is_412`, `test_if_match_parsing`, `test_stale_version_after_a_save_is_412`, `test_concurrent_change_between_read_and_write_is_412`, `test_updated_record_over_the_body_limit_is_rejected`, `test_storage_unavailable_is_503`, `test_unexpected_storage_fault_is_generic_500` |
+| F04 | Invalid annotations get the record report; nothing stored | `test_annotation_updates.py`: `test_invalid_annotations_get_the_record_report`, `test_duplicate_annotations_are_rejected`, `test_valid_update_report_matches_validate` |
+| F05 | Versions and ETags; export fields | `test_annotation_updates.py`: `test_versions_and_etags`, `test_delete_removes_the_original_too`; `test_submissions.py::test_export_returns_wrapped_exact_record` |
+| F06 | Migration backfill and table match | `test_annotation_updates.py::test_migration_backfills_existing_rows`; `test_submissions.py`: `test_migrations_match_table_definitions`, `test_migrations_downgrade_and_upgrade` |
+| F07 | OpenAPI operations, headers, schemas, examples | `test_annotation_updates.py`: `test_new_operations_are_documented`, `test_update_examples_match_runtime`; `test_openapi.py`: `test_response_variants`, `test_submission_examples_match_runtime`, `test_all_references_resolve` |
+| F08 | Code point / UTF-16 conversion | `frontend/src/lib/offsets.test.ts`; `Annotator.test.tsx`: "uses code points for offsets after astral characters" |
+| F09 | Pagination | `frontend/src/lib/paginate.test.ts`; `Annotator.test.tsx`: "splits the narrative and pages with buttons and arrow keys". Real-layout fitting needs a browser (see the README's manual check). |
+| F10 | Selection, cross-page extension, relabel/delete, overlap, duplicates | `Annotator.test.tsx`: "creating annotations", "pages", "inspecting overlapping annotations"; `annotations.test.ts`: `isDuplicate`, `assignLanes` |
+| F11 | Lossless round trip through save | `annotations.test.ts`: "round-trips loaded annotations byte for byte", "keeps a relabelled loaded annotation's source"; `Annotator.test.tsx`: "sends loaded annotations back byte for byte", "shows report issues next to their annotations" |
+| F12 | Labels match `config.LABELS` | `tests/test_frontend_labels.py::test_generated_labels_are_current` |
+| F13 | Serving at `/` and real-server round trip | `test_annotation_updates.py`: `test_frontend_is_served_after_api_routes`, `test_frontend_is_not_mounted_without_a_build`; `test_real_server.py::test_smoke_script_against_real_server` (list, update, 412); `App.test.tsx` |
+| F14 | No identities or values in logs or the console | `test_annotation_updates.py::test_identities_and_values_never_logged`; every `Annotator.test.tsx` test asserts no console output; ESLint `no-console` |

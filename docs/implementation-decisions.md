@@ -1,7 +1,8 @@
 # Implementation decisions
 
 These are choices the specifications leave to the implementation: stage 1 (revision 0.4) first,
-then stage 2 (revision 0.1, [Stage 2 submissions](#stage-2-submissions)). None of them adds an
+then stage 2 (revision 0.1, [Stage 2 submissions](#stage-2-submissions)), then stage 3 (revision
+0.1, [Stage 3 annotation frontend](#stage-3-annotation-frontend)). None of them adds an
 input restriction or relaxes a "must".
 
 ## Revision 0.4 intake
@@ -203,3 +204,85 @@ input restriction or relaxes a "must".
   `make check` always includes storage.
 - **Versions** stay at 0.1.0 for the package and API: the project does not bump versions without
   being asked.
+
+## Stage 3 annotation frontend
+
+The owner decided the workflow: case data enters only through `POST /api/v1/submissions` (an
+external system's job); the frontend annotates stored submissions, and saving replaces the
+stored record's annotations. Export returns the current record and the original upload is kept.
+Saving is an explicit action, the API serves the built frontend, and selections may extend across
+pages. The rest:
+
+- **Splice, don't re-serialize.** The update route finds the stored record's top-level
+  `annotations` member with a small scanner over the validated text (`updates.object_members`,
+  built on `json.JSONDecoder.raw_decode` with no-op number hooks, so no number is ever built) and
+  replaces the value's characters with the request's map text, also found by the scanner. Every
+  other character stays as stored. Member names are compared decoded, so `"annot\u0061tions"` is
+  the member. A record without the member gets `,"annotations":<map>` after its last value.
+- **Validation of the candidate record**, not of the body: the spliced record goes through
+  `build_report("single", ...)`, so the report is exactly what `/validate` would return for it,
+  and issue paths (`/annotations/AE/0/text`) also point into the update body. The stored record
+  was valid and only its map changed, so issues can only concern the map.
+- **Candidate size limit.** A spliced record over 5 MiB is 422 `LIMIT_EXCEEDED` at
+  `/annotations` (new message "The updated record must not exceed 5242880 bytes."), so every
+  stored record can still be resubmitted and fits the export budget.
+- **Envelopes.** The update route addresses a submission by identity, so every failure except an
+  invalid record is the closed `SubmissionFailure`, including gate and decoder failures; an invalid
+  record gets the stage 1 `ValidationReport`. Listing uses `SubmissionFailure` too. New error codes:
+  `PRECONDITION_REQUIRED` (428) and `VERSION_CONFLICT` (412).
+- **Versions are integers with strong ETags** (`"3"`). `If-Match` is required; anything other than
+  exactly one strong tag naming the current version is 412, including `*`, weak tags, and lists.
+  The guard is checked twice: against the row read before validation (a clear early 412) and in
+  `UPDATE ... WHERE version = :expected RETURNING`, so a concurrent save between the read and the
+  write is 412 rather than a lost update. A deleted-meanwhile submission is also 412 then.
+- **`original_json`** is written on insert and never updated; migration 0002 backfills it from
+  `source_json` and sets `updated_at = submitted_at` for existing rows. `source_json` keeps its
+  name and stage 2 meaning (what export returns). Nothing exposes `original_json` yet.
+- **Listing** is ordered with `COLLATE "C"`, which is byte order and, for ASCII `case_id`s,
+  code-point order, independent of the database's locale. An unknown username is an empty list.
+  No pagination; a list response over the 8 MiB budget would be a generic 500, which needs tens
+  of thousands of cases for one username.
+- **Serving.** `SCAT_WEB_DIR` names a built frontend; `mount_frontend` mounts it at `/` after all
+  routes, so API routes, `/healthz`, `/docs`, and `/openapi.json` keep precedence, and a missing
+  build mounts nothing. Responses carry a same-origin CSP (no inline scripts, no external fonts),
+  `nosniff`, and `no-referrer`; hashed `assets/` are immutable and everything else is
+  `no-cache`. Static requests are not logged (uvicorn's access log stays off).
+- **Labels in the frontend** are generated (`make labels`) into
+  `frontend/src/generated/labels.ts`, committed so the Node build needs no Python, and
+  `tests/test_frontend_labels.py` fails when it is stale.
+- **Exact annotation round trip without a lossless parser.** The UI never changes a loaded
+  annotation's text or range, so it keeps each loaded annotation object's exact source text
+  (located by a scanner over the export body, `frontend/src/lib/jsonSpans.ts`) and sends it back
+  as is. That preserves number tokens, escapes, key order, and whitespace, which a lossless JSON
+  parser would not all keep, and needs no extra dependency. `JSON.parse` reads values only.
+- **Code points in the UI.** `NarrativeIndex` maps code points to UTF-16 positions and back.
+  Annotations are held in code points; DOM work converts at the edges. Selection offsets come
+  from `Range.toString().length` measured from the page's text root, which contains only
+  narrative text nodes (all decoration is CSS backgrounds).
+- **Pages are measured, not estimated.** A hidden box with the page text's font, width, and
+  height (minus room for stripes) decides how much fits (`usePages`); `paginate` gallops from the
+  previous page length and bisects, then backs off to the last break opportunity after
+  whitespace (never in a surrogate pair or CRLF). A `ResizeObserver` and font loading trigger
+  re-pagination; the first character of the current page stays on screen.
+- **Overlap rendering.** The page text is split at every annotation boundary into flat runs
+  (no nested elements). Each covering annotation draws a 3px stripe in its lane (interval
+  partitioning, up to three lanes drawn); the innermost annotation tints the run. Inline bottom
+  padding extends the painted area under descenders without changing line layout, so the measured
+  pages stay exact. Deeper overlaps are listed by the click inspector and the panel.
+- **Cross-page selection.** A selection becomes pending (marked with a dashed stripe) and
+  survives paging; Shift+click or Shift+select extends it to cover both. Escape cancels.
+- **Duplicates are refused in the UI** (same label and range) when creating or relabelling, with
+  a message, because the server would reject the save.
+- **Identity in the browser.** The username is remembered in `localStorage` only as a
+  convenience; there is no sign-in. ESLint forbids `console` calls, and a test fails on any
+  console output, so values never reach the console.
+- **Toolchain.** Node 24.22.1 LTS (`node:24.22.1-trixie-slim`), npm with a committed
+  `package-lock.json`, exact versions chosen at least two weeks after their release. TypeScript is
+  6.0.3 because typescript-eslint supports TypeScript below 6.1. Vite builds, Vitest with jsdom
+  tests, ESLint (`strictTypeChecked`) and `tsc` check. The dev container keeps
+  `frontend/node_modules` in a named volume: a Windows bind mount cannot hold npm's symlinks
+  (`node_modules/.bin`), and the volume is faster.
+- **Fonts are self-hosted** (`@fontsource-variable/source-serif-4` for the narrative,
+  `@fontsource-variable/atkinson-hyperlegible-next` for the interface, chosen because it keeps
+  look-alike characters apart in label keys such as `AE`/`mAE`), since the CSP allows only
+  same-origin resources.

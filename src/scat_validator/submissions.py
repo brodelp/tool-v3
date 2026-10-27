@@ -1,4 +1,4 @@
-"""Submission identity parameters and response serialization (stage 2 spec §3).
+"""Submission identity parameters and response serialization (stage 2 §3, stage 3 §3).
 
 Pure functions over decoded values: no HTTP framework or database access, so the rules can be
 tested directly and reused by a later ingestion design.
@@ -13,10 +13,14 @@ from urllib.parse import quote
 from scat_validator.config import MAX_RESPONSE_BYTES, OFFSET_UNIT
 from scat_validator.contracts import (
     SUBMISSION_FAILURE_ADAPTER,
+    SUBMISSION_LIST_ADAPTER,
     SUBMISSION_RECEIPT_ADAPTER,
+    SUBMISSION_UPDATE_ADAPTER,
     ErrorCode,
     SubmissionFailure,
+    SubmissionList,
     SubmissionReceipt,
+    SubmissionUpdate,
     ValidationReport,
 )
 from scat_validator.diagnostics import IssueCollector, Msg
@@ -28,12 +32,14 @@ from scat_validator.reporting import (
     Outcome,
     ResponseBudgetExceeded,
 )
-from scat_validator.storage import StoredSubmission
+from scat_validator.storage import StoredSubmission, SubmissionVersion
+from scat_validator.updates import entity_tag
 from scat_validator.validation import ValueProblem, case_id_problem, username_problem
 from scat_validator.wire import contains_forbidden_code_point
 
 SUBMISSIONS_ROUTE: Final = "/api/v1/submissions"
 SUBMISSION_ROUTE: Final = SUBMISSIONS_ROUTE + "/{case_id}"
+ANNOTATIONS_ROUTE: Final = SUBMISSION_ROUTE + "/annotations"
 USERNAME_PARAMETER: Final = "username"
 
 
@@ -80,14 +86,12 @@ def _check_username(values: list[str], issues: IssueCollector) -> str | None:
     return None
 
 
-def parse_identity(case_id: str, query_string: bytes) -> Identity | IssueCollector:
-    """The ``{case_id}`` path segment and the single ``username`` query parameter (§3.4)."""
-    issues = IssueCollector()
-    case_id_ok = _check_case_id(case_id, issues)
+def _parse_username_query(query_string: bytes, issues: IssueCollector) -> str | None:
+    """The single ``username`` query parameter; issues in parameter-name order."""
     pairs = decode_query(query_string)
     root = PathNode.root()
     username: str | None = None
-    # Query issues in parameter-name order; a missing username sorts as its own name.
+    # A missing username sorts as its own name.
     for name in sorted({*(name for name, _ in pairs), USERNAME_PARAMETER}):
         if name == USERNAME_PARAMETER:
             username = _check_username([v for n, v in pairs if n == name], issues)
@@ -97,9 +101,24 @@ def parse_identity(case_id: str, query_string: bytes) -> Identity | IssueCollect
             issues.add(
                 "query", root.child(name), "UNKNOWN_QUERY_PARAMETER", Msg.UNKNOWN_IDENTITY_QUERY
             )
+    return username
+
+
+def parse_identity(case_id: str, query_string: bytes) -> Identity | IssueCollector:
+    """The ``{case_id}`` path segment and the single ``username`` query parameter (§3.4)."""
+    issues = IssueCollector()
+    case_id_ok = _check_case_id(case_id, issues)
+    username = _parse_username_query(query_string, issues)
     if issues.count or not case_id_ok or username is None:
         return issues
     return Identity(case_id, username)
+
+
+def parse_username(query_string: bytes) -> str | IssueCollector:
+    """The listing route's only parameter (stage 3 §3.1)."""
+    issues = IssueCollector()
+    username = _parse_username_query(query_string, issues)
+    return issues if issues.count or username is None else username
 
 
 def export_location(case_id: str, username: str) -> str:
@@ -141,6 +160,7 @@ def serialize_receipt(
         report["record_count"],
         report["issue_count"],
         location=export_location(identity.case_id, identity.username),
+        etag=entity_tag(1),
     )
 
 
@@ -150,10 +170,50 @@ def serialize_export(stored: StoredSubmission) -> Outcome:
         "case_id": stored.case_id,
         "username": stored.username,
         "submitted_at": format_timestamp(stored.submitted_at),
+        "updated_at": format_timestamp(stored.updated_at),
+        "version": stored.version,
         "offset_unit": OFFSET_UNIT,
     }
     prefix = json.dumps(head, ensure_ascii=False, separators=(",", ":")).encode()
     body = b"".join((prefix[:-1], b',"record":', stored.source_json.encode(), b"}"))
     if len(body) > MAX_RESPONSE_BYTES:
         raise ResponseBudgetExceeded
-    return Outcome(200, body, 1, 0)
+    return Outcome(200, body, 1, 0, etag=entity_tag(stored.version))
+
+
+def serialize_update(
+    report: ValidationReport, identity: Identity, saved: SubmissionVersion
+) -> Outcome:
+    update: SubmissionUpdate = {
+        "case_id": identity.case_id,
+        "username": identity.username,
+        "submitted_at": format_timestamp(saved.submitted_at),
+        "updated_at": format_timestamp(saved.updated_at),
+        "version": saved.version,
+        "report": report,
+    }
+    body = SUBMISSION_UPDATE_ADAPTER.dump_json(update)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ResponseBudgetExceeded
+    return Outcome(
+        200, body, report["record_count"], report["issue_count"], etag=entity_tag(saved.version)
+    )
+
+
+def serialize_list(username: str, entries: list[SubmissionVersion]) -> Outcome:
+    listing: SubmissionList = {
+        "username": username,
+        "submissions": [
+            {
+                "case_id": entry.case_id,
+                "submitted_at": format_timestamp(entry.submitted_at),
+                "updated_at": format_timestamp(entry.updated_at),
+                "version": entry.version,
+            }
+            for entry in entries
+        ],
+    }
+    body = SUBMISSION_LIST_ADAPTER.dump_json(listing)
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise ResponseBudgetExceeded
+    return Outcome(200, body, None, 0)

@@ -19,13 +19,16 @@ from scat_validator.config import (
     MAX_SAFE_NUMBER,
 )
 from scat_validator.contracts import (
+    AnnotationsUpdate,
     BatchEnvelope,
     CaseId,
     Record,
     RequestFailure,
     SubmissionExport,
     SubmissionFailure,
+    SubmissionList,
     SubmissionReceipt,
+    SubmissionUpdate,
     Username,
     ValidationReport,
 )
@@ -40,6 +43,9 @@ _SCHEMA_INPUTS: Final = [
     ("SubmissionReceipt", SubmissionReceipt),
     ("SubmissionExport", SubmissionExport),
     ("SubmissionFailure", SubmissionFailure),
+    ("AnnotationsUpdate", AnnotationsUpdate),
+    ("SubmissionUpdate", SubmissionUpdate),
+    ("SubmissionList", SubmissionList),
 ]
 
 
@@ -376,6 +382,8 @@ EXAMPLE_EXPORT: Final[dict[str, Any]] = {
     "case_id": "12345678-1",
     "username": "demo_annotator",
     "submitted_at": EXAMPLE_SUBMITTED_AT,
+    "updated_at": EXAMPLE_SUBMITTED_AT,
+    "version": 1,
     "offset_unit": "unicode-code-point",
     "record": EXAMPLE_RECORD,
 }
@@ -448,6 +456,12 @@ _LOCATION_HEADER: Final = {
         "schema": {"type": "string"},
     }
 }
+_ETAG_HEADER: Final = {
+    "ETag": {
+        "description": 'Strong entity tag of the submission version, its quoted decimal (`"1"`).',
+        "schema": {"type": "string", "pattern": '^"[1-9][0-9]*"$'},
+    }
+}
 
 
 def _identity_parameters() -> list[dict[str, Any]]:
@@ -499,7 +513,7 @@ def submit_operation_extra() -> dict[str, Any]:
         "Valid and stored.",
         "SubmissionReceipt",
         {"minimal_record": EXAMPLE_RECEIPT},
-        extra_headers=_LOCATION_HEADER,
+        extra_headers=_LOCATION_HEADER | _ETAG_HEADER,
     )
     responses["409"] = _response(
         "`ALREADY_SUBMITTED` (RequestFailure): this (case_id, username) is already stored.",
@@ -555,12 +569,17 @@ def _lookup_responses() -> dict[str, Any]:
 def export_operation_extra() -> dict[str, Any]:
     return {
         "description": _LOOKUP_DESCRIPTION
-        + "\nReturns the whole stored record byte for byte (foreign metadata and exact numeric "
-        "tokens included) inside an envelope that adds `submitted_at` and `offset_unit`.",
+        + "\nReturns the whole current record byte for byte (foreign metadata and exact numeric "
+        "tokens included) inside an envelope that adds `submitted_at`, `updated_at`, `version`, "
+        "and `offset_unit`. After an annotation update, the record carries the saved "
+        "annotations. `ETag` names the version to send in `If-Match` when updating.",
         "parameters": _identity_parameters(),
         "responses": {
             "200": _response(
-                "The stored submission.", "SubmissionExport", {"minimal_record": EXAMPLE_EXPORT}
+                "The stored submission.",
+                "SubmissionExport",
+                {"minimal_record": EXAMPLE_EXPORT},
+                extra_headers=_ETAG_HEADER,
             ),
             **_lookup_responses(),
         },
@@ -575,5 +594,151 @@ def delete_operation_extra() -> dict[str, Any]:
         "responses": {
             "204": _response("Deleted. No body.", None),
             **_lookup_responses(),
+        },
+    }
+
+
+# ---------------------------------------------------------------- stage 3: list and update
+
+EXAMPLE_UPDATED_AT: Final = "2026-10-27T09:12:44.000001Z"
+EXAMPLE_LIST: Final[dict[str, Any]] = {
+    "username": "demo_annotator",
+    "submissions": [
+        {
+            "case_id": "12345678-1",
+            "submitted_at": EXAMPLE_SUBMITTED_AT,
+            "updated_at": EXAMPLE_UPDATED_AT,
+            "version": 2,
+        }
+    ],
+}
+EXAMPLE_UPDATE_BODY: Final[dict[str, Any]] = {
+    "annotations": EXAMPLE_ANNOTATED_RECORD["annotations"]
+}
+EXAMPLE_UPDATE: Final[dict[str, Any]] = {
+    "case_id": "12345678-1",
+    "username": "demo_annotator",
+    "submitted_at": EXAMPLE_SUBMITTED_AT,
+    "updated_at": EXAMPLE_UPDATED_AT,
+    "version": 2,
+    "report": EXAMPLE_ANNOTATED_REPORT,
+}
+EXAMPLE_VERSION_CONFLICT: Final = example_submission_failure(
+    "VERSION_CONFLICT", "The submission changed since this version was read.", []
+)
+
+_LIST_DESCRIPTION: Final = f"""
+Lists the stored submissions of one `username` by `case_id` in code-point order, with their
+timestamps and versions but no record content. An unknown username is an empty list, since a
+username is a claim, not an account. There is no pagination.
+
+`username` is required exactly once and percent-encoded (`+` as `%2B`); no other parameter is
+accepted. Problems are 422 `INVALID_PARAMETERS`.
+
+{_NO_AUTH_NOTE}
+"""
+
+_UPDATE_DESCRIPTION: Final = f"""
+Replaces the `annotations` of one stored record. The body is `{{"annotations": {{...}}}}` and
+nothing else. Its map replaces the stored record's `annotations` value **byte for byte** (it is
+added after the last property when the record had none). Every other byte of the record, such as
+the narrative, foreign metadata, and exact number tokens, is unchanged. `{{}}` removes every
+annotation.
+
+The updated record is validated exactly like `POST /api/v1/validate`. Because the body's only
+property is `annotations`, the report's issue paths (`/annotations/AE/0/text`) point into the body.
+
+**Versions.** `If-Match` must carry the `ETag` of the version being replaced (from export, the
+submission receipt, or a previous update). It is required (428 `PRECONDITION_REQUIRED`); `*`, weak
+tags, lists, and stale versions are 412 `VERSION_CONFLICT`. Each success increments `version`.
+
+Order: media type, encoding, size; identity parameters; `If-Match` presence; JSON decoding and
+depth; body shape; stored submission (404, 503); version (412); updated-record size (at most
+{MAX_BODY_BYTES} bytes, 422 `LIMIT_EXCEEDED`); validation (422 ValidationReport); store (412 if the
+submission changed meanwhile). The first failing step decides the result.
+{_LOOKUP_DESCRIPTION}"""
+
+_IF_MATCH_PARAMETER: Final[dict[str, Any]] = {
+    "name": "If-Match",
+    "in": "header",
+    "required": True,
+    "schema": {"type": "string"},
+    "description": 'The strong `ETag` of the version being replaced, such as `"1"`.',
+    "examples": {"version_1": {"value": '"1"'}},
+}
+
+
+def list_operation_extra() -> dict[str, Any]:
+    lookup = _lookup_responses()
+    return {
+        "description": _LIST_DESCRIPTION,
+        "parameters": [_identity_parameters()[1]],
+        "responses": {
+            "200": _response(
+                "The submissions of this username (possibly none).",
+                "SubmissionList",
+                {"one_submission": EXAMPLE_LIST},
+            ),
+            "422": lookup["422"],
+            "500": lookup["500"],
+            "503": lookup["503"],
+        },
+    }
+
+
+def update_operation_extra() -> dict[str, Any]:
+    failure = "SubmissionFailure"
+    return {
+        "description": _UPDATE_DESCRIPTION,
+        "parameters": [*_identity_parameters(), _IF_MATCH_PARAMETER],
+        "requestBody": {
+            "required": True,
+            "description": "The complete new annotation map, and nothing else.",
+            "content": _json_content(
+                _ref("AnnotationsUpdate"), {"annotated_record": EXAMPLE_UPDATE_BODY}
+            ),
+        },
+        "responses": {
+            "200": _response(
+                "Saved. `ETag` names the new version.",
+                "SubmissionUpdate",
+                {"annotated_record": EXAMPLE_UPDATE},
+                extra_headers=_ETAG_HEADER,
+            ),
+            "400": _response("`INVALID_JSON` or `DUPLICATE_PROPERTY`.", failure),
+            "404": _response(
+                "`NOT_FOUND`: no submission for this (case_id, username).",
+                failure,
+                {"not_found": EXAMPLE_NOT_FOUND},
+            ),
+            "412": _response(
+                "`VERSION_CONFLICT`: `If-Match` does not name the current version.",
+                failure,
+                {"version_conflict": EXAMPLE_VERSION_CONFLICT},
+            ),
+            "413": _response("`PAYLOAD_TOO_LARGE` (no issues).", failure),
+            "415": _response(
+                "`UNSUPPORTED_MEDIA_TYPE` or `UNSUPPORTED_CONTENT_ENCODING` (no issues).", failure
+            ),
+            "422": {
+                "description": (
+                    "Either a ValidationReport for an updated record with failures "
+                    "(`INVALID_DOCUMENT`), or a SubmissionFailure for invalid parameters "
+                    "(`INVALID_PARAMETERS`) or a depth, body-shape, or size failure "
+                    "(`INVALID_DOCUMENT`)."
+                ),
+                "headers": _NO_STORE_HEADER,
+                "content": _json_content(
+                    {"oneOf": [_ref("ValidationReport"), _ref(failure)]},
+                    {"missing_username": EXAMPLE_MISSING_USERNAME},
+                ),
+            },
+            "428": _response("`PRECONDITION_REQUIRED`: no `If-Match` header.", failure),
+            "500": _response("`INTERNAL_ERROR`.", failure),
+            "503": _response(
+                "`STORAGE_UNAVAILABLE`: the database is unreachable or not configured.",
+                failure,
+                {"storage_unavailable": EXAMPLE_STORAGE_UNAVAILABLE},
+            ),
         },
     }

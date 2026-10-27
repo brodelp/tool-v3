@@ -79,6 +79,8 @@ class Msg:
     USERNAME_REQUIRED: Final = "The username query parameter is required."
     USERNAME_REPEATED: Final = "username must not be repeated."
     UNKNOWN_IDENTITY_QUERY: Final = "Only the username query parameter is supported."
+    UNKNOWN_UPDATE_FIELD: Final = "The request body allows only the annotations property."
+    UPDATED_RECORD_SIZE: Final = "The updated record must not exceed 5242880 bytes."
 
 
 def compose_message(message: str, *, length_fallback: bool, name_fallback: bool) -> str:
