@@ -3,7 +3,6 @@
 import json
 import logging
 import re
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -11,7 +10,6 @@ from alembic import command
 from sqlalchemy import text
 
 from scat_validator import storage as storage_module
-from scat_validator.api import app
 from scat_validator.contracts import (
     REQUEST_FAILURE_ADAPTER,
     SUBMISSION_EXPORT_ADAPTER,
@@ -19,7 +17,7 @@ from scat_validator.contracts import (
     SUBMISSION_RECEIPT_ADAPTER,
 )
 from scat_validator.openapi_docs import EXAMPLE_NOT_FOUND
-from scat_validator.storage import Storage, create_storage_engine
+from scat_validator.storage import Storage
 from tests.conftest import alembic_config
 from tests.helpers import (
     MISSING,
@@ -204,8 +202,11 @@ def test_export_returns_wrapped_exact_record(storage: Storage) -> None:
         "case_id": receipt["case_id"],
         "username": receipt["username"],
         "submitted_at": receipt["submitted_at"],
+        "updated_at": receipt["submitted_at"],
+        "version": 1,
         "offset_unit": "unicode-code-point",
     }
+    assert response.header("etag") == '"1"'
     for token in (b"0.100000000000000005", b"1e-400", b": -0,", b"1.2300", b"1e0", b"1.0,"):
         assert token in response.body
 
@@ -269,13 +270,6 @@ def test_resubmission_after_delete_is_allowed(storage: Storage) -> None:
 
 
 # ---------------------------------------------------------------- S06 identity parameters
-
-
-@pytest.fixture
-def no_storage() -> Iterator[None]:
-    """Parameter checks must decide before storage is consulted, so none is installed."""
-    app.state.storage = None
-    yield
 
 
 @pytest.mark.parametrize(
@@ -356,15 +350,6 @@ def test_usernames_with_url_characters_round_trip(storage: Storage, username: st
 
 
 # ---------------------------------------------------------------- S07 storage unavailable
-
-
-@pytest.fixture
-def unreachable_storage() -> Iterator[None]:
-    unreachable = Storage(create_storage_engine("postgresql://scat:scat@127.0.0.1:1/scat"))
-    app.state.storage = unreachable
-    yield
-    app.state.storage = None
-    unreachable.dispose()
 
 
 @pytest.mark.parametrize("fixture", ["no_storage", "unreachable_storage"])

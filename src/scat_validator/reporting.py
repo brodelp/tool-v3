@@ -39,6 +39,8 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "STORAGE_UNAVAILABLE": "Submission storage is unavailable.",
     "INVALID_PARAMETERS": "The path or query parameters are invalid.",
     "NOT_FOUND": "No submission exists for this case_id and username.",
+    "PRECONDITION_REQUIRED": "If-Match must name the submission version being replaced.",
+    "VERSION_CONFLICT": "The submission changed since this version was read.",
 }
 REPORT_INVALID_MESSAGE: Final = "One or more records are invalid."
 
@@ -55,6 +57,8 @@ HTTP_STATUS: Final[dict[ErrorCode, int]] = {
     "STORAGE_UNAVAILABLE": 503,
     "INVALID_PARAMETERS": 422,
     "NOT_FOUND": 404,
+    "PRECONDITION_REQUIRED": 428,
+    "VERSION_CONFLICT": 412,
 }
 
 
@@ -69,6 +73,7 @@ class Outcome:
     record_count: int | None
     issue_count: int
     location: str | None = None  # Location header of a 201 response
+    etag: str | None = None  # ETag header naming a submission version (stage 3 spec §3.3)
 
 
 def _error(code: ErrorCode, message: str | None = None) -> ErrorInfo:

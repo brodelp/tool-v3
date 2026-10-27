@@ -194,3 +194,22 @@ def export(case_id: str, query: bytes | str) -> RawResponse:
 
 def delete(case_id: str, query: bytes | str) -> RawResponse:
     return call("DELETE", f"/api/v1/submissions/{case_id}", query=query, headers=[])
+
+
+def list_submissions(query: bytes | str) -> RawResponse:
+    return call("GET", "/api/v1/submissions", query=query, headers=[])
+
+
+def update_annotations(
+    case_id: str,
+    query: bytes | str,
+    body: bytes,
+    if_match: str | None = '"1"',
+    **kwargs: Any,
+) -> RawResponse:
+    """PUT an annotation map; ``if_match=None`` sends no If-Match header."""
+    headers = list(kwargs.pop("headers", JSON_HEADERS))
+    if if_match is not None:
+        headers.append((b"if-match", if_match.encode("latin-1")))
+    path = f"/api/v1/submissions/{case_id}/annotations"
+    return call("PUT", path, body=body, query=query, headers=headers, **kwargs)

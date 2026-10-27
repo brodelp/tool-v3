@@ -214,6 +214,8 @@ def test_response_variants(spec: dict[str, Any]) -> None:
         "STORAGE_UNAVAILABLE",
         "INVALID_PARAMETERS",
         "NOT_FOUND",
+        "PRECONDITION_REQUIRED",
+        "VERSION_CONFLICT",
     }
     assert schemas(spec)["Location"]["enum"] == ["body", "query", "path"]
 
@@ -434,7 +436,8 @@ def test_submission_examples_match_runtime(spec: dict[str, Any], storage: Storag
     get = spec["paths"][SUBMISSION]["get"]
     exported = export("12345678-1", "username=demo_annotator")
     documented = examples_for(get, "200")["minimal_record"]["value"]
-    assert exported.json() == documented | {"submitted_at": exported.json()["submitted_at"]}
+    timestamps = {name: exported.json()[name] for name in ("submitted_at", "updated_at")}
+    assert exported.json() == documented | timestamps
     missing_username = examples_for(get, "422")["missing_username"]["value"]
     assert export("12345678-1", "").json() == missing_username
 

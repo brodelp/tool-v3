@@ -1,25 +1,31 @@
 """HTTP routes for the SCAT API: thin gate orchestration over pure modules.
 
-Stage 1 routes validate only. Stage 2 submission routes add storage (stage 2 spec §3); they are
-the only code that touches the database, and the validation routes work without it.
+Stage 1 routes validate only. Stage 2 submission routes add storage (stage 2 spec §3) and stage 3
+adds listing and annotation updates (stage 3 spec §3); they are the only code that touches the
+database, and the validation routes work without it. A built frontend, when configured, is served
+at ``/`` after every API route (stage 3 spec §6).
 """
 
 import logging
+import os
 import time
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final
 
 from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
+from starlette.types import Scope
 
 from scat_validator.config import MAX_BODY_BYTES
-from scat_validator.contracts import Mode, ValidationReport
+from scat_validator.contracts import ErrorCode, Mode, ValidationReport
 from scat_validator.diagnostics import IssueCollector, Msg
 from scat_validator.http_gates import (
     QueryOptions,
@@ -32,8 +38,10 @@ from scat_validator.openapi_docs import (
     component_schemas,
     delete_operation_extra,
     export_operation_extra,
+    list_operation_extra,
     operation_extra,
     submit_operation_extra,
+    update_operation_extra,
 )
 from scat_validator.paths import PathNode
 from scat_validator.reporting import (
@@ -47,13 +55,24 @@ from scat_validator.reporting import (
 )
 from scat_validator.storage import UNAVAILABLE_ERRORS, Storage
 from scat_validator.submissions import (
+    ANNOTATIONS_ROUTE,
     SUBMISSION_ROUTE,
     SUBMISSIONS_ROUTE,
     Identity,
     parse_identity,
+    parse_username,
     serialize_export,
+    serialize_list,
     serialize_receipt,
+    serialize_update,
     submission_failure,
+)
+from scat_validator.updates import (
+    annotations_text,
+    candidate_size_issues,
+    check_update_shape,
+    if_match_version,
+    splice_annotations,
 )
 from scat_validator.wire import DecodeFailure, JsonValue, decode_document, read_limited_body
 
@@ -105,17 +124,22 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
-def _decode_failure_outcome(mode: Mode, failure: DecodeFailure) -> Outcome:
+def _decode_failure_issues(failure: DecodeFailure) -> tuple[ErrorCode, IssueCollector]:
     issues = IssueCollector()
     root = PathNode.root()
     if failure.code == "LIMIT_EXCEEDED":
         issues.add("body", root, "LIMIT_EXCEEDED", Msg.DEPTH)
-        return serialize_failure(request_failure(mode, "INVALID_DOCUMENT", issues))
+        return "INVALID_DOCUMENT", issues
     if failure.code == "DUPLICATE_PROPERTY":
         issues.add("body", root, "DUPLICATE_PROPERTY", Msg.DUPLICATE_PROPERTY)
     else:
         issues.add("body", root, "INVALID_JSON", Msg.INVALID_JSON)
-    return serialize_failure(request_failure(mode, failure.code, issues))
+    return failure.code, issues
+
+
+def _decode_failure_outcome(mode: Mode, failure: DecodeFailure) -> Outcome:
+    code, issues = _decode_failure_issues(failure)
+    return serialize_failure(request_failure(mode, code, issues))
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,19 +192,23 @@ def evaluate_body(mode: Mode, body: bytes, query_string: bytes) -> Outcome:
     return serialize_report(result.report, echo)
 
 
-async def _read_body(request: Request, mode: Mode) -> bytes | Outcome:
-    """Gates 1-2: headers, then the bounded body."""
+async def _read_body(request: Request, fail: Callable[[ErrorCode], Outcome]) -> bytes | Outcome:
+    """Gates 1-2: headers, then the bounded body. ``fail`` builds the route's failure envelope."""
     headers = request.headers
     if not media_type_supported(headers.getlist("content-type")):
-        return serialize_failure(request_failure(mode, "UNSUPPORTED_MEDIA_TYPE"))
+        return fail("UNSUPPORTED_MEDIA_TYPE")
     if not content_encoding_supported(headers.getlist("content-encoding")):
-        return serialize_failure(request_failure(mode, "UNSUPPORTED_CONTENT_ENCODING"))
+        return fail("UNSUPPORTED_CONTENT_ENCODING")
     if declared_length_too_large(headers.getlist("content-length")):
-        return serialize_failure(request_failure(mode, "PAYLOAD_TOO_LARGE"))
+        return fail("PAYLOAD_TOO_LARGE")
     body = await read_limited_body(request.stream(), MAX_BODY_BYTES)
     if body is None:
-        return serialize_failure(request_failure(mode, "PAYLOAD_TOO_LARGE"))
+        return fail("PAYLOAD_TOO_LARGE")
     return body
+
+
+def _request_failure(mode: Mode) -> Callable[[ErrorCode], Outcome]:
+    return lambda code: serialize_failure(request_failure(mode, code))
 
 
 def _query_string(request: Request) -> bytes:
@@ -189,7 +217,7 @@ def _query_string(request: Request) -> bytes:
 
 
 async def _evaluate_request(request: Request, mode: Mode) -> Outcome:
-    body = await _read_body(request, mode)
+    body = await _read_body(request, _request_failure(mode))
     if isinstance(body, Outcome):
         return body
     return await run_in_threadpool(evaluate_body, mode, body, _query_string(request))
@@ -228,6 +256,8 @@ async def _respond(
     headers = {"Cache-Control": "no-store"}
     if outcome.location is not None:
         headers["Location"] = outcome.location
+    if outcome.etag is not None:
+        headers["ETag"] = outcome.etag
     if outcome.status == 204:
         return Response(status_code=204, headers=headers)
     return Response(
@@ -266,7 +296,7 @@ def _storage(request: Request) -> Storage | None:
 
 
 async def _submit(request: Request) -> Outcome:
-    body = await _read_body(request, "single")
+    body = await _read_body(request, _request_failure("single"))
     if isinstance(body, Outcome):
         return body
     evaluation = await run_in_threadpool(
@@ -317,6 +347,110 @@ async def _lookup(request: Request, action: Callable[[Storage, Identity], Outcom
     except UNAVAILABLE_ERRORS as exc:
         _log_fault(exc, logging.WARNING, "storage unavailable")
         return submission_failure("STORAGE_UNAVAILABLE")
+
+
+# ---------------------------------------------------------------- stage 3: list and update
+
+
+async def _list(request: Request) -> Outcome:
+    username = parse_username(_query_string(request))
+    if isinstance(username, IssueCollector):
+        return submission_failure("INVALID_PARAMETERS", username)
+    storage = _storage(request)
+    if storage is None:
+        return submission_failure("STORAGE_UNAVAILABLE")
+    try:
+        entries = await run_in_threadpool(storage.list_for, username)
+    except UNAVAILABLE_ERRORS as exc:
+        _log_fault(exc, logging.WARNING, "storage unavailable")
+        return submission_failure("STORAGE_UNAVAILABLE")
+    return serialize_list(username, entries)
+
+
+def parse_update_body(body: bytes) -> str | Outcome:
+    """Steps 4-5 of stage 3 §3.2: decoding, then the closed body shape; the exact map text."""
+    try:
+        document = decode_document(body)
+    except DecodeFailure as failure:
+        return submission_failure(*_decode_failure_issues(failure))
+    shape_issues = check_update_shape(document.value)
+    if shape_issues is not None:
+        return submission_failure("INVALID_DOCUMENT", shape_issues)
+    return annotations_text(document.document_bytes.decode("utf-8"))
+
+
+def evaluate_candidate(
+    record_text: str, annotations: str
+) -> Outcome | tuple[ValidationReport, str]:
+    """Steps 8-9: splice the map into the stored record, then validate it as one record."""
+    candidate = splice_annotations(record_text, annotations)
+    size_issues = candidate_size_issues(candidate)
+    if size_issues is not None:
+        return submission_failure("INVALID_DOCUMENT", size_issues)
+    # A stored record with a decoded map spliced in is valid JSON within the depth limit.
+    document = decode_document(candidate.encode("utf-8"))
+    return build_report("single", [(document.value, PathNode.root())]), candidate
+
+
+async def _update(request: Request) -> Outcome:
+    body = await _read_body(request, submission_failure)
+    if isinstance(body, Outcome):
+        return body
+    identity = parse_identity(request.path_params["case_id"], _query_string(request))
+    if isinstance(identity, IssueCollector):
+        return submission_failure("INVALID_PARAMETERS", identity)
+    if_match = request.headers.getlist("if-match")
+    if not if_match:
+        return submission_failure("PRECONDITION_REQUIRED")
+    annotations = await run_in_threadpool(parse_update_body, body)
+    if isinstance(annotations, Outcome):
+        return annotations
+    storage = _storage(request)
+    if storage is None:
+        return submission_failure("STORAGE_UNAVAILABLE")
+    try:
+        stored = await run_in_threadpool(storage.fetch, identity.case_id, identity.username)
+        if stored is None:
+            return submission_failure("NOT_FOUND")
+        if if_match_version(if_match) != stored.version:
+            return submission_failure("VERSION_CONFLICT")
+        evaluation = await run_in_threadpool(evaluate_candidate, stored.source_json, annotations)
+        if isinstance(evaluation, Outcome):
+            return evaluation
+        report, candidate = evaluation
+        if not report["valid"]:
+            return serialize_report(report, None)
+        saved = await run_in_threadpool(
+            storage.update_record, identity.case_id, identity.username, stored.version, candidate
+        )
+    except UNAVAILABLE_ERRORS as exc:
+        _log_fault(exc, logging.WARNING, "storage unavailable")
+        return submission_failure("STORAGE_UNAVAILABLE")
+    if saved is None:  # changed or deleted since it was read
+        return submission_failure("VERSION_CONFLICT")
+    return serialize_update(report, identity, saved)
+
+
+@app.get(SUBMISSIONS_ROUTE, openapi_extra=list_operation_extra(), summary="List submissions")
+async def list_submissions(request: Request) -> Response:
+    return await _respond(
+        "GET",
+        SUBMISSIONS_ROUTE,
+        lambda: _list(request),
+        lambda: submission_failure("INTERNAL_ERROR"),
+    )
+
+
+@app.put(
+    ANNOTATIONS_ROUTE, openapi_extra=update_operation_extra(), summary="Replace the annotations"
+)
+async def update_annotations(request: Request) -> Response:
+    return await _respond(
+        "PUT",
+        ANNOTATIONS_ROUTE,
+        lambda: _update(request),
+        lambda: submission_failure("INTERNAL_ERROR"),
+    )
 
 
 @app.post(
@@ -373,3 +507,42 @@ def custom_openapi() -> dict[str, Any]:
 
 
 app.openapi = custom_openapi  # type: ignore[method-assign]
+
+
+# ---------------------------------------------------------------- stage 3: frontend
+
+WEB_DIR_VARIABLE: Final = "SCAT_WEB_DIR"
+# Same-origin only: the app loads its scripts, styles, and fonts from here and calls /api/v1.
+FRONTEND_HEADERS: Final = {
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; "
+        "form-action 'none'; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+class FrontendFiles(StaticFiles):
+    """The built frontend: hashed assets are immutable, everything else is revalidated."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers.update(FRONTEND_HEADERS)
+        immutable = path.startswith("assets/")
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable" if immutable else "no-cache"
+        )
+        return response
+
+
+def mount_frontend(application: FastAPI, directory: Path) -> bool:
+    """Serve a built frontend at ``/``, after every route already registered."""
+    if not (directory / "index.html").is_file():
+        return False
+    application.mount("/", FrontendFiles(directory=directory, html=True), name="frontend")
+    return True
+
+
+if web_dir := os.environ.get(WEB_DIR_VARIABLE):
+    mount_frontend(app, Path(web_dir))

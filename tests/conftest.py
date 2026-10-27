@@ -75,3 +75,19 @@ def storage(_session_storage: Storage) -> Iterator[Storage]:
     app.state.storage = _session_storage
     yield _session_storage
     app.state.storage = None
+
+
+@pytest.fixture
+def no_storage() -> Iterator[None]:
+    """Parameter checks must decide before storage is consulted, so none is installed."""
+    app.state.storage = None
+    yield
+
+
+@pytest.fixture
+def unreachable_storage() -> Iterator[None]:
+    unreachable = Storage(create_storage_engine("postgresql://scat:scat@127.0.0.1:1/scat"))
+    app.state.storage = unreachable
+    yield
+    app.state.storage = None
+    unreachable.dispose()
