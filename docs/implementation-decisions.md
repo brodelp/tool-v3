@@ -294,6 +294,13 @@ Choices the stage 4 spec and design leave open:
 - **Splice helpers** live in `splice.py` (object members with name spans; replace, append, and
   remove a member). Migration 0003 imports `scat_validator.splice` (pure and stable) rather than
   copying it. Its downgrade is lossy: it drops LLM sets.
+- **Migration 0003 refuses foreign `annotation_sets`.** Under stage 1 rev 0.4 a top-level
+  `annotation_sets` was legal foreign metadata. Before rewriting anything, the upgrade scans every
+  row's top-level member names (decoded, so escaped names count) and, if any record already has
+  `annotation_sets`, raises `RuntimeError` with only the count ("resolve them before upgrading")
+  and changes no row. An operator resolves those records (rename or remove the member) and
+  reruns. Nested members named `annotations` or `annotation_sets` are not top-level and are left
+  alone.
 - **Per-set validation order:** record fields, then sets in code-point id order, then each set's
   fields (kind, annotations, provider, model, generated_at), then labels. Inventory: record
   foreign names, then per set its foreign names, then its annotations'. `SUPERSEDED_FIELD` is

@@ -85,13 +85,11 @@ def rows(engine: Engine) -> dict[str, tuple[object, ...]]:
 def test_0003_upgrade_splices_legacy_records(legacy_engine: Engine) -> None:
     insert(legacy_engine, "5-1", LEGACY)
     insert(legacy_engine, "6-1", PLAIN)
-    insert(legacy_engine, "7-1", WITH_LLM)
     before = rows(legacy_engine)
     command.upgrade(alembic_config(url_of(legacy_engine)), "0003")
     after = rows(legacy_engine)
     assert after["5-1"] == (MIGRATED, LEGACY, before["5-1"][2], before["5-1"][3])
     assert after["6-1"] == before["6-1"]
-    assert after["7-1"] == before["7-1"]
 
 
 def test_0003_downgrade_restores_user_map_and_drops_llm_sets(legacy_engine: Engine) -> None:
@@ -118,3 +116,53 @@ def test_0003_upgrade_then_check_is_clean(legacy_engine: Engine) -> None:
     config = alembic_config(url_of(legacy_engine))
     command.upgrade(config, "head")
     command.check(config)
+
+
+FOREIGN_BOTH = (
+    '{"case_id":"9-1","username":"u","narrative":"x","annotations":{"AE":[]},'
+    '"annotation_sets":{"note":"foreign"}}'
+)
+FOREIGN_ONLY = '{"case_id":"9-2","username":"u","narrative":"x","annotation_sets":[1,2]}'
+
+
+@pytest.mark.parametrize("foreign", [FOREIGN_BOTH, FOREIGN_ONLY])
+def test_0003_refuses_records_with_foreign_annotation_sets(
+    legacy_engine: Engine, foreign: str
+) -> None:
+    insert(legacy_engine, "5-1", LEGACY)
+    insert(legacy_engine, "6-1", PLAIN)
+    insert(legacy_engine, "9-1", foreign)
+    before = rows(legacy_engine)
+    with pytest.raises(RuntimeError) as raised:
+        command.upgrade(alembic_config(url_of(legacy_engine)), "0003")
+    assert str(raised.value) == (
+        "migration 0003: 1 stored record(s) already have a top-level annotation_sets member; "
+        "resolve them before upgrading"
+    )
+    assert "foreign" not in str(raised.value)
+    assert rows(legacy_engine) == before
+
+
+NESTED_DECOY = (
+    '{"case_id":"10-1","username":"u","narrative":"x",'
+    '"meta":{"annotations":{"AE":[]},"annotation_sets":{}}}'
+)
+ESCAPED_NAME = (
+    '{"case_id":"10-2","username":"u","narrative":"x",'
+    '"annot\\u0061tions" : {"AE":[{"text":"x","start":0,"end":1}]} }'
+)
+ESCAPED_MIGRATED = (
+    '{"case_id":"10-2","username":"u","narrative":"x",'
+    '"annotation_sets":{"user":{"kind":"user","annotations":'
+    '{"AE":[{"text":"x","start":0,"end":1}]}}} }'
+)
+
+
+def test_0003_ignores_nested_decoys_and_decodes_escaped_names(legacy_engine: Engine) -> None:
+    insert(legacy_engine, "10-1", NESTED_DECOY)
+    insert(legacy_engine, "10-2", ESCAPED_NAME)
+    before = rows(legacy_engine)
+    command.upgrade(alembic_config(url_of(legacy_engine)), "0003")
+    after = rows(legacy_engine)
+    assert after["10-1"] == before["10-1"]
+    assert after["10-2"] == (ESCAPED_MIGRATED, *before["10-2"][1:])

@@ -112,7 +112,9 @@ Two Alembic revisions: `0003` migrates the records, `0004` adds the proposal tab
   splicing: the member `"annotations":X` becomes
   `"annotation_sets":{"user":{"kind":"user","annotations":X}}`, where `X` is the exact stored
   text of the map. No other character changes. `original_json` is never changed. `version` and
-  `updated_at` are unchanged (the migration is not an annotation update).
+  `updated_at` are unchanged (the migration is not an annotation update). If any stored record
+  already has a top-level `annotation_sets` member (legal foreign metadata under stage 1 rev
+  0.4), the upgrade fails before changing any row, reporting only the count of such records.
 - **Downgrade:** the `user` set's map text becomes the `annotations` member again and the
   `annotation_sets` member is removed, **dropping any LLM sets**. This is lossy and documented.
 - **Table `llm_proposals` (`0004`):**

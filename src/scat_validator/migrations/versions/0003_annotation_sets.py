@@ -2,14 +2,16 @@
 
 Stage 4 spec §3. Records are spliced as text, never re-serialized, so exact bytes and number
 tokens survive. ``original_json``, ``version`` and ``updated_at`` are not touched: this is a
-data migration, not an annotation update. The downgrade is lossy: LLM sets are dropped.
+data migration, not an annotation update. A record that already has a top-level
+``annotation_sets`` member (foreign metadata under stage 1 rev 0.4) stops the upgrade before any
+row changes. The downgrade is lossy: LLM sets are dropped.
 
 Revision ID: 0003
 Revises: 0002
 Create Date: 2026-10-29
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import sqlalchemy as sa
 from alembic import op
@@ -47,11 +49,10 @@ def _downgraded(text: str) -> str | None:
     return replace_member(text, span, '"annotations":' + map_text)
 
 
-def _rewrite(convert: Callable[[str], str | None]) -> None:
-    """Applies ``convert`` to every ``source_json``; ``None`` leaves a row unchanged."""
+def _batches() -> Iterator[list[tuple[int, str]]]:
+    """Every ``(id, source_json)`` in id order, ``_BATCH`` rows at a time."""
     connection = op.get_bind()
     last_id = 0
-    update = sa.text("UPDATE submissions SET source_json = :source WHERE id = :id")
     while True:
         batch = connection.execute(
             sa.text(
@@ -61,14 +62,41 @@ def _rewrite(convert: Callable[[str], str | None]) -> None:
         ).all()
         if not batch:
             return
+        yield [(row_id, source) for row_id, source in batch]
+        last_id = batch[-1][0]
+
+
+def _refuse_foreign_sets() -> None:
+    """Stage 1 rev 0.4 allowed a foreign top-level ``annotation_sets``; never overwrite one.
+
+    Only a count is reported: stored values never reach an error message or a log.
+    """
+    found = sum(
+        1
+        for batch in _batches()
+        for _, source in batch
+        if member(object_members(source), "annotation_sets") is not None
+    )
+    if found:
+        raise RuntimeError(
+            f"migration 0003: {found} stored record(s) already have a top-level "
+            "annotation_sets member; resolve them before upgrading"
+        )
+
+
+def _rewrite(convert: Callable[[str], str | None]) -> None:
+    """Applies ``convert`` to every ``source_json``; ``None`` leaves a row unchanged."""
+    connection = op.get_bind()
+    update = sa.text("UPDATE submissions SET source_json = :source WHERE id = :id")
+    for batch in _batches():
         for row_id, source in batch:
             converted = convert(source)
             if converted is not None:
                 connection.execute(update, {"source": converted, "id": row_id})
-        last_id = batch[-1][0]
 
 
 def upgrade() -> None:
+    _refuse_foreign_sets()
     _rewrite(_upgraded)
 
 
