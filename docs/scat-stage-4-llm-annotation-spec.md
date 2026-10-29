@@ -172,7 +172,7 @@ proposal. Nothing in the record changes, so no `If-Match` is needed.
 | 10. Store | | 503 `STORAGE_UNAVAILABLE` |
 
 A `LLM_OUTPUT_INVALID` failure has one issue with `location` `"llm_output"`, path `""`, and one
-reason code: `OUTPUT_TRUNCATED`, `UNBALANCED_TAG`, `NESTED_TAG`, `EMPTY_TAG`, or
+reason code: `OUTPUT_TRUNCATED`, `MODEL_REFUSED`, `UNBALANCED_TAG`, `NESTED_TAG`, `EMPTY_TAG`, or
 `NARRATIVE_ALTERED`. Nothing is stored and nothing from the output is returned.
 
 Success is `201` with an `LlmProposal`:
@@ -254,7 +254,7 @@ its value) is logged once.
 | `SCAT_LLM_MODEL` | Model name; must match the model pattern of §2.2. |
 | `SCAT_LLM_API_KEY` | Secret. Required for `anthropic`; optional for `openai` (local servers). |
 | `SCAT_LLM_BASE_URL` | Optional. Defaults: `https://api.anthropic.com` and `https://api.openai.com/v1`. Lets `openai` reach Ollama, vLLM, or Azure-style gateways. |
-| `SCAT_LLM_TIMEOUT_SECONDS` | Optional; default `LLM_TIMEOUT_SECONDS` (180). |
+| `SCAT_LLM_TIMEOUT_SECONDS` | Optional; default `LLM_TIMEOUT_SECONDS` (600). Models that reason before answering can take minutes on a long narrative. |
 | `SCAT_LLM_MAX_OUTPUT_TOKENS` | Optional; default `LLM_MAX_OUTPUT_TOKENS` (32,000). |
 
 Defaults and limits live in `config.py`. Compose passes the variables through from `.env`.
@@ -262,10 +262,17 @@ Defaults and limits live in `config.py`. Compose passes the variables through fr
 #### 5.2 Prompt and call
 
 The prompt is `src/scat_validator/llm/prompt.md`. The narrative replaces the literal `{text}`
-exactly once (no other templating). It is sent as one user message, with deterministic sampling
-where the provider and model support it. The response text is the concatenation of the response's
-text content. A response the provider marks as stopped by the output limit is `OUTPUT_TRUNCATED`.
-One call per request; there are no retries.
+exactly once (no other templating). It is sent as one user message with the provider's default sampling (Anthropic API version
+`2026-10-21` rejects `temperature`, so no sampling parameters are sent to either provider). The
+response text is the concatenation of the response's text blocks (Anthropic: `content` blocks of
+type `text`, ignoring thinking blocks; OpenAI-compatible: `choices[0].message.content`). A
+response stopped by the output limit (`max_tokens`; `length`) is `OUTPUT_TRUNCATED`; a refusal
+(`refusal`; `content_filter`) is `MODEL_REFUSED`. One call per request; there are no retries.
+
+| Provider | Request |
+| --- | --- |
+| `anthropic` | `POST {base}/v1/messages`, headers `x-api-key`, `anthropic-version: 2026-10-21`; body `model`, `max_tokens`, `messages`. |
+| `openai` | `POST {base}/chat/completions`, header `Authorization: Bearer <key>` when a key is set; body `model`, `max_tokens`, `messages`. |
 
 #### 5.3 Parsing and the narrative check
 

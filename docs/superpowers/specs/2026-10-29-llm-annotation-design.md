@@ -59,7 +59,10 @@ frontend ──GET /api/v1/llm──────────────▶ api.
 | `api.py` | New routes, renamed user-set route; LLM calls run in a worker thread like storage calls; logging of provider/model/status/duration/counts/reason only. | all |
 
 `httpx` moves from the dev group to runtime dependencies (already locked at 0.28.1); `uv.lock`
-is regenerated with `make lock`. No vendor SDKs.
+is regenerated with `make lock`. No vendor SDKs. Raw HTTP is the owner-approved choice: one small,
+provider-neutral client covers both protocols, and the pinned dependency set gains no SDK (the
+Anthropic Python SDK 1.x would add `httpx2`). The Anthropic adapter sends API version
+`2026-10-21` and no sampling parameters.
 
 ### Frontend units
 
