@@ -94,12 +94,27 @@ def without_set(record_text: str, set_id: str) -> str | None:
     return remove_member(record_text, sets.value_start, set_id)
 
 
-def candidate_size_issues(candidate: str) -> IssueCollector | None:
-    """An updated record must stay within the body limit, so it can be resubmitted and exported."""
+def has_set(record_text: str, set_id: str) -> bool:
+    """Whether the record's ``annotation_sets`` has a member named ``set_id``."""
+    sets = member(object_members(record_text), ANNOTATION_SETS_FIELD)
+    return (
+        sets is not None
+        and member(object_members(record_text, sets.value_start), set_id) is not None
+    )
+
+
+def candidate_size_issues(
+    candidate: str, path_member: str = ANNOTATIONS_MEMBER
+) -> IssueCollector | None:
+    """An updated record must stay within the body limit, so it can be resubmitted and exported.
+
+    The issue is at ``/<path_member>``: ``/annotations`` (the user-set body's map) or
+    ``/annotation_sets`` (record-relative, for the routes without a body; stage 4 §4.4).
+    """
     if len(candidate.encode()) <= MAX_BODY_BYTES:
         return None
     issues = IssueCollector()
-    node = PathNode.root().child(ANNOTATIONS_MEMBER)
+    node = PathNode.root().child(path_member)
     issues.add("body", node, "LIMIT_EXCEEDED", Msg.UPDATED_RECORD_SIZE)
     return issues
 

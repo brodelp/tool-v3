@@ -21,6 +21,8 @@ class OutputInvalid(Exception):
     def __init__(self, reason: OutputReason) -> None:
         super().__init__()
         self.reason: OutputReason = reason
+        # Length of the rejected output, for logging; set by the caller that has the output.
+        self.output_code_points: int | None = None
 
 
 def contains_markup(narrative: str) -> bool:

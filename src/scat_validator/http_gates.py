@@ -61,6 +61,15 @@ def declared_length_too_large(values: list[str]) -> bool:
     )
 
 
+def declared_length_nonzero(values: list[str]) -> bool:
+    """True when any well-formed Content-Length declares a body (routes that take none)."""
+    for value in values:
+        text = value.strip(" \t")
+        if text.isascii() and text.isdigit() and text.strip("0"):
+            return True
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class QueryOptions:
     echo: bool

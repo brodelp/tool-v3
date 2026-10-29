@@ -3,6 +3,7 @@
 Failures are raised without upstream text so nothing from a response can reach a log.
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
@@ -12,6 +13,11 @@ from ..config import ANTHROPIC_API_VERSION
 from .settings import LlmSettings
 
 _CONNECT_TIMEOUT: Final = 10.0
+
+# httpx logs each request URL at INFO and httpcore logs traffic at DEBUG; a base URL may carry
+# credentials, so neither may reach the service log (stage 4 §7).
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 
 @dataclass(frozen=True, slots=True)

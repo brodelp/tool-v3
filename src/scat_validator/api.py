@@ -2,8 +2,9 @@
 
 Stage 1 routes validate only. Stage 2 submission routes add storage (stage 2 spec §3) and stage 3
 adds listing and annotation updates (stage 3 spec §3); they are the only code that touches the
-database, and the validation routes work without it. A built frontend, when configured, is served
-at ``/`` after every API route (stage 3 spec §6).
+database, and the validation routes work without it. Stage 4 adds annotation sets and LLM
+proposals (stage 4 spec §4); the LLM status route is database-free. A built frontend, when
+configured, is served at ``/`` after every API route (stage 3 spec §6).
 """
 
 import logging
@@ -13,33 +14,52 @@ import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
+from uuid import UUID
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import Response
+from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.types import Scope
 
-from scat_validator.config import MAX_BODY_BYTES
+from scat_validator.config import (
+    ANNOTATION_SETS_FIELD,
+    LLM_PROPOSAL_TTL_SECONDS,
+    MAX_BODY_BYTES,
+    MAX_LLM_NARRATIVE_CODE_POINTS,
+)
 from scat_validator.contracts import ErrorCode, Mode, ValidationReport
 from scat_validator.diagnostics import IssueCollector, Msg
 from scat_validator.http_gates import (
     QueryOptions,
     content_encoding_supported,
+    declared_length_nonzero,
     declared_length_too_large,
     media_type_supported,
     parse_query,
 )
+from scat_validator.llm.annotate import ProposedSet, annotate
+from scat_validator.llm.providers import ProviderTimeout, ProviderUnavailable, new_client
+from scat_validator.llm.settings import LlmSettings, load_llm_settings
+from scat_validator.llm.tags import OutputInvalid, OutputReason, contains_markup
 from scat_validator.openapi_docs import (
+    accept_operation_extra,
     component_schemas,
     delete_operation_extra,
+    discard_operation_extra,
     export_operation_extra,
     list_operation_extra,
+    llm_status_operation_extra,
     operation_extra,
+    proposal_operation_extra,
+    remove_set_operation_extra,
     submit_operation_extra,
     user_set_operation_extra,
 )
@@ -55,14 +75,23 @@ from scat_validator.reporting import (
 )
 from scat_validator.storage import UNAVAILABLE_ERRORS, Storage
 from scat_validator.submissions import (
+    ACCEPT_ROUTE,
+    LLM_ROUTE,
+    PROPOSAL_ROUTE,
+    PROPOSALS_ROUTE,
+    SETS_ROUTE,
     SUBMISSION_ROUTE,
     SUBMISSIONS_ROUTE,
     USER_SET_ROUTE,
     Identity,
     parse_identity,
+    parse_proposal_identity,
+    parse_set_removal,
     parse_username,
     serialize_export,
     serialize_list,
+    serialize_llm_status,
+    serialize_proposal,
     serialize_receipt,
     serialize_update,
     submission_failure,
@@ -71,8 +100,11 @@ from scat_validator.updates import (
     annotations_text,
     candidate_size_issues,
     check_update_shape,
+    has_set,
     if_match_version,
+    with_set,
     with_user_map,
+    without_set,
 )
 from scat_validator.wire import DecodeFailure, JsonValue, decode_document, read_limited_body
 
@@ -92,16 +124,29 @@ if not logger.handlers:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-    """Open storage from DATABASE_URL unless a caller (such as a test) already installed one."""
+    """Open storage from DATABASE_URL and load the LLM settings and client from the environment,
+    unless a caller (such as a test) already installed them."""
+    state = application.state
     created = None
-    if getattr(application.state, "storage", None) is None:
-        created = application.state.storage = Storage.from_environment()
+    if getattr(state, "storage", None) is None:
+        created = state.storage = Storage.from_environment()
+    loaded_settings = getattr(state, "llm_settings", None) is None
+    if loaded_settings:
+        state.llm_settings = load_llm_settings(os.environ)
+    created_client = None
+    if state.llm_settings is not None and getattr(state, "llm_client", None) is None:
+        created_client = state.llm_client = new_client()
     try:
         yield
     finally:
         if created is not None:
             created.dispose()
-            application.state.storage = None
+            state.storage = None
+        if created_client is not None:
+            created_client.close()
+            state.llm_client = None
+        if loaded_settings:
+            state.llm_settings = None
 
 
 app = FastAPI(
@@ -116,6 +161,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.state.storage = None
+app.state.llm_settings = None
+app.state.llm_client = None
+app.state.clock = lambda: datetime.now(UTC)
 
 
 @app.get("/healthz")
@@ -380,11 +428,14 @@ def parse_update_body(body: bytes) -> str | Outcome:
 
 
 def evaluate_candidate(
-    record_text: str, candidate_of: Callable[[str], str]
+    record_text: str, candidate_of: Callable[[str], str], size_path: str = "annotations"
 ) -> Outcome | tuple[ValidationReport, str]:
-    """Steps 8-9: build the candidate from the stored record, then validate it as one record."""
+    """Steps 8-9: build the candidate from the stored record, then validate it as one record.
+
+    An oversized candidate is reported at ``/<size_path>``.
+    """
     candidate = candidate_of(record_text)
-    size_issues = candidate_size_issues(candidate)
+    size_issues = candidate_size_issues(candidate, size_path)
     if size_issues is not None:
         return submission_failure("INVALID_DOCUMENT", size_issues)
     # A stored record with a decoded map spliced in is valid JSON within the depth limit.
@@ -495,6 +546,335 @@ async def delete_submission(request: Request) -> Response:
     )
 
 
+# ---------------------------------------------------------------- stage 4: LLM annotation
+
+
+OUTPUT_MESSAGES: Final[dict[OutputReason, str]] = {
+    "OUTPUT_TRUNCATED": Msg.OUTPUT_TRUNCATED,
+    "MODEL_REFUSED": Msg.MODEL_REFUSED,
+    "UNBALANCED_TAG": Msg.UNBALANCED_TAG,
+    "NESTED_TAG": Msg.NESTED_TAG,
+    "EMPTY_TAG": Msg.EMPTY_TAG,
+    "NARRATIVE_ALTERED": Msg.NARRATIVE_ALTERED,
+}
+
+
+async def _require_empty_body(request: Request) -> Outcome | None:
+    """Routes without a body reject any: a declared length, or a first streamed byte."""
+    if declared_length_nonzero(request.headers.getlist("content-length")):
+        return submission_failure("PAYLOAD_TOO_LARGE")
+    if await read_limited_body(request.stream(), 0) is None:
+        return submission_failure("PAYLOAD_TOO_LARGE")
+    return None
+
+
+def _log_llm(
+    provider: str,
+    model: str,
+    status: int,
+    duration: float,
+    output_code_points: int | None,
+    annotation_count: int | None,
+    reason: str | None,
+) -> None:
+    # Configuration and counts only: never the prompt, narrative, output, key, or base URL.
+    logger.info(
+        "llm provider=%s model=%s status=%d duration_ms=%.1f output_code_points=%s "
+        "annotations=%s reason=%s",
+        provider,
+        model,
+        status,
+        duration * 1000,
+        "-" if output_code_points is None else output_code_points,
+        "-" if annotation_count is None else annotation_count,
+        "-" if reason is None else reason,
+    )
+
+
+def _run_llm(
+    settings: LlmSettings,
+    narrative: str,
+    client: httpx.Client | None,
+    clock: Callable[[], datetime],
+) -> ProposedSet | Outcome:
+    """Steps 7-9 of stage 4 §4.3: one provider call and its parsed set. Runs in a worker."""
+    started = time.perf_counter()
+
+    def log(status: int, output: int | None, count: int | None, reason: str | None) -> None:
+        elapsed = time.perf_counter() - started
+        _log_llm(settings.provider, settings.model, status, elapsed, output, count, reason)
+
+    try:
+        if client is None:
+            with new_client() as own_client:
+                proposed = annotate(settings, narrative, own_client, clock)
+        else:
+            proposed = annotate(settings, narrative, client, clock)
+    except ProviderTimeout:
+        log(504, None, None, "LLM_TIMEOUT")
+        return submission_failure("LLM_TIMEOUT")
+    except ProviderUnavailable:
+        log(502, None, None, "LLM_UNAVAILABLE")
+        return submission_failure("LLM_UNAVAILABLE")
+    except OutputInvalid as invalid:
+        log(502, invalid.output_code_points, None, invalid.reason)
+        issues = IssueCollector()
+        issues.add("llm_output", PathNode.root(), invalid.reason, OUTPUT_MESSAGES[invalid.reason])
+        return submission_failure("LLM_OUTPUT_INVALID", issues)
+    except Exception:
+        log(500, None, None, None)
+        raise
+    log(201, proposed.output_code_points, proposed.annotation_count, None)
+    return proposed
+
+
+def _narrative_and_presence(record_text: str, set_id: str) -> tuple[str, bool]:
+    """The stored narrative (losslessly decoded) and whether the record has set ``set_id``."""
+    record = decode_document(record_text.encode("utf-8")).value
+    assert isinstance(record, dict)  # a stored record is valid
+    narrative = record["narrative"]
+    assert isinstance(narrative, str)
+    return narrative, has_set(record_text, set_id)
+
+
+async def _propose(request: Request) -> Outcome:
+    rejected = await _require_empty_body(request)
+    if rejected is not None:
+        return rejected
+    identity = parse_identity(request.path_params["case_id"], _query_string(request))
+    if isinstance(identity, IssueCollector):
+        return submission_failure("INVALID_PARAMETERS", identity)
+    state = request.app.state
+    settings: LlmSettings | None = state.llm_settings
+    if settings is None:
+        return submission_failure("LLM_NOT_CONFIGURED")
+    storage = _storage(request)
+    if storage is None:
+        return submission_failure("STORAGE_UNAVAILABLE")
+    try:
+        stored = await run_in_threadpool(storage.fetch, identity.case_id, identity.username)
+        if stored is None:
+            return submission_failure("NOT_FOUND")
+        narrative, replaces = await run_in_threadpool(
+            _narrative_and_presence, stored.source_json, settings.set_id
+        )
+        if len(narrative) > MAX_LLM_NARRATIVE_CODE_POINTS:
+            return submission_failure("NARRATIVE_TOO_LONG")
+        if contains_markup(narrative):
+            return submission_failure("NARRATIVE_HAS_MARKUP")
+        proposed = await run_in_threadpool(
+            _run_llm, settings, narrative, state.llm_client, state.clock
+        )
+        if isinstance(proposed, Outcome):
+            return proposed
+        saved = await run_in_threadpool(
+            storage.insert_proposal,
+            identity.case_id,
+            identity.username,
+            proposed.set_id,
+            proposed.set_json,
+            stored.version,
+            LLM_PROPOSAL_TTL_SECONDS,
+        )
+    except UNAVAILABLE_ERRORS as exc:
+        _log_fault(exc, logging.WARNING, "storage unavailable")
+        return submission_failure("STORAGE_UNAVAILABLE")
+    if saved is None:  # deleted while the provider ran
+        return submission_failure("NOT_FOUND")
+    return serialize_proposal(identity, saved, proposed, replaces)
+
+
+async def _proposal_request(
+    request: Request, *, if_match_required: bool
+) -> Outcome | tuple[Identity, UUID, Storage]:
+    """Steps 1-3 of stage 4 §4.4 (1-2 for §4.5), then the storage handle."""
+    rejected = await _require_empty_body(request)
+    if rejected is not None:
+        return rejected
+    parsed = parse_proposal_identity(
+        request.path_params["case_id"], request.path_params["proposal_id"], _query_string(request)
+    )
+    if isinstance(parsed, IssueCollector):
+        return submission_failure("INVALID_PARAMETERS", parsed)
+    if if_match_required and not request.headers.getlist("if-match"):
+        return submission_failure("PRECONDITION_REQUIRED")
+    storage = _storage(request)
+    if storage is None:
+        return submission_failure("STORAGE_UNAVAILABLE")
+    return *parsed, storage
+
+
+async def _accept(request: Request) -> Outcome:
+    parsed = await _proposal_request(request, if_match_required=True)
+    if isinstance(parsed, Outcome):
+        return parsed
+    identity, proposal_id, storage = parsed
+    case_id, username = identity.case_id, identity.username
+    try:
+        stored = await run_in_threadpool(storage.fetch, case_id, username)
+        if stored is None:
+            return submission_failure("NOT_FOUND")
+        proposal = await run_in_threadpool(storage.fetch_proposal, proposal_id, case_id, username)
+        if proposal is None:
+            return submission_failure("PROPOSAL_NOT_FOUND")
+        if if_match_version(request.headers.getlist("if-match")) != stored.version:
+            return submission_failure("VERSION_CONFLICT")
+        evaluation = await run_in_threadpool(
+            evaluate_candidate,
+            stored.source_json,
+            lambda text: with_set(text, proposal.set_id, proposal.set_json),
+            ANNOTATION_SETS_FIELD,
+        )
+        if isinstance(evaluation, Outcome):
+            return evaluation
+        report, candidate = evaluation
+        if not report["valid"]:
+            return serialize_report(report, None)
+        saved = await run_in_threadpool(
+            storage.accept_proposal, proposal_id, case_id, username, stored.version, candidate
+        )
+    except UNAVAILABLE_ERRORS as exc:
+        _log_fault(exc, logging.WARNING, "storage unavailable")
+        return submission_failure("STORAGE_UNAVAILABLE")
+    if saved is None:  # the record changed, or the proposal went, since they were read
+        return submission_failure("VERSION_CONFLICT")
+    return serialize_update(report, identity, saved)
+
+
+async def _discard(request: Request) -> Outcome:
+    parsed = await _proposal_request(request, if_match_required=False)
+    if isinstance(parsed, Outcome):
+        return parsed
+    identity, proposal_id, storage = parsed
+    case_id, username = identity.case_id, identity.username
+    try:
+        if await run_in_threadpool(storage.delete_proposal, proposal_id, case_id, username):
+            return Outcome(204, b"", None, 0)
+        stored = await run_in_threadpool(storage.fetch, case_id, username)
+    except UNAVAILABLE_ERRORS as exc:
+        _log_fault(exc, logging.WARNING, "storage unavailable")
+        return submission_failure("STORAGE_UNAVAILABLE")
+    return submission_failure("NOT_FOUND" if stored is None else "PROPOSAL_NOT_FOUND")
+
+
+def _without_set(record_text: str, set_id: str) -> str:
+    candidate = without_set(record_text, set_id)
+    assert candidate is not None  # presence was checked first
+    return candidate
+
+
+async def _remove_set(request: Request) -> Outcome:
+    rejected = await _require_empty_body(request)
+    if rejected is not None:
+        return rejected
+    parsed = parse_set_removal(request.path_params["case_id"], _query_string(request))
+    if isinstance(parsed, IssueCollector):
+        return submission_failure("INVALID_PARAMETERS", parsed)
+    identity, set_id = parsed
+    if_match = request.headers.getlist("if-match")
+    if not if_match:
+        return submission_failure("PRECONDITION_REQUIRED")
+    storage = _storage(request)
+    if storage is None:
+        return submission_failure("STORAGE_UNAVAILABLE")
+    try:
+        stored = await run_in_threadpool(storage.fetch, identity.case_id, identity.username)
+        if stored is None:
+            return submission_failure("NOT_FOUND")
+        if not await run_in_threadpool(has_set, stored.source_json, set_id):
+            return submission_failure("SET_NOT_FOUND")
+        if if_match_version(if_match) != stored.version:
+            return submission_failure("VERSION_CONFLICT")
+        evaluation = await run_in_threadpool(
+            evaluate_candidate,
+            stored.source_json,
+            lambda text: _without_set(text, set_id),
+            ANNOTATION_SETS_FIELD,
+        )
+        if isinstance(evaluation, Outcome):
+            return evaluation
+        report, candidate = evaluation
+        if not report["valid"]:
+            return serialize_report(report, None)
+        saved = await run_in_threadpool(
+            storage.update_record, identity.case_id, identity.username, stored.version, candidate
+        )
+    except UNAVAILABLE_ERRORS as exc:
+        _log_fault(exc, logging.WARNING, "storage unavailable")
+        return submission_failure("STORAGE_UNAVAILABLE")
+    if saved is None:
+        return submission_failure("VERSION_CONFLICT")
+    return serialize_update(report, identity, saved)
+
+
+async def _llm_status(request: Request) -> Outcome:
+    rejected = await _require_empty_body(request)
+    if rejected is not None:
+        return rejected
+    settings: LlmSettings | None = request.app.state.llm_settings
+    return serialize_llm_status(settings)
+
+
+def _submission_response(
+    method: str, route: str, handler: Callable[[], Awaitable[Outcome]]
+) -> Awaitable[Response]:
+    return _respond(method, route, handler, lambda: submission_failure("INTERNAL_ERROR"))
+
+
+@app.get(LLM_ROUTE, openapi_extra=llm_status_operation_extra(), summary="LLM annotation status")
+async def llm_status(request: Request) -> Response:
+    return await _submission_response("GET", LLM_ROUTE, lambda: _llm_status(request))
+
+
+@app.post(
+    PROPOSALS_ROUTE,
+    openapi_extra=proposal_operation_extra(),
+    summary="Propose LLM annotations",
+    status_code=201,
+)
+async def propose_llm_annotations(request: Request) -> Response:
+    return await _submission_response("POST", PROPOSALS_ROUTE, lambda: _propose(request))
+
+
+@app.post(ACCEPT_ROUTE, openapi_extra=accept_operation_extra(), summary="Accept an LLM proposal")
+async def accept_llm_proposal(request: Request) -> Response:
+    return await _submission_response("POST", ACCEPT_ROUTE, lambda: _accept(request))
+
+
+@app.delete(
+    PROPOSAL_ROUTE,
+    openapi_extra=discard_operation_extra(),
+    summary="Discard an LLM proposal",
+    status_code=204,
+)
+async def discard_llm_proposal(request: Request) -> Response:
+    return await _submission_response("DELETE", PROPOSAL_ROUTE, lambda: _discard(request))
+
+
+@app.delete(
+    SETS_ROUTE, openapi_extra=remove_set_operation_extra(), summary="Remove an LLM annotation set"
+)
+async def remove_llm_set(request: Request) -> Response:
+    return await _submission_response("DELETE", SETS_ROUTE, lambda: _remove_set(request))
+
+
+def _restore_response_examples(schema: dict[str, Any]) -> None:
+    """FastAPI drops ``None`` everywhere in the document, so documented response examples
+    (which must equal runtime bodies, nulls included) are copied back from each route."""
+    for route in app.routes:
+        extra = getattr(route, "openapi_extra", None)
+        if not extra or "responses" not in extra:
+            continue
+        assert isinstance(route, APIRoute)
+        for method in route.methods or ():
+            responses = schema["paths"][route.path_format][method.lower()]["responses"]
+            for status, response in extra["responses"].items():
+                for media, content in response.get("content", {}).items():
+                    if "examples" in content:
+                        target = responses[status]["content"][media]
+                        target["examples"] = content["examples"]
+
+
 def custom_openapi() -> dict[str, Any]:
     if app.openapi_schema is None:
         schema = get_openapi(
@@ -504,6 +884,7 @@ def custom_openapi() -> dict[str, Any]:
             routes=app.routes,
         )
         schema.setdefault("components", {}).setdefault("schemas", {}).update(component_schemas())
+        _restore_response_examples(schema)
         app.openapi_schema = schema
     return app.openapi_schema
 

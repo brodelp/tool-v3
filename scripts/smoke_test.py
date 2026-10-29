@@ -8,6 +8,7 @@ as raw bytes where numeric fidelity matters.
 
 import http.client
 import json
+import os
 import secrets
 import sys
 from pathlib import Path
@@ -136,6 +137,7 @@ def main() -> None:
         status == 413 and json.loads(body)["error"]["code"] == "PAYLOAD_TOO_LARGE",
     )
 
+    llm_status(server)
     submissions(server)
 
     status, _, body = server.request("GET", "/openapi.json")
@@ -146,6 +148,11 @@ def main() -> None:
         "/api/v1/submissions",
         "/api/v1/submissions/{case_id}",
         "/api/v1/submissions/{case_id}/annotation-sets/user",
+        "/api/v1/submissions/{case_id}/annotation-sets",
+        "/api/v1/submissions/{case_id}/llm-proposals",
+        "/api/v1/submissions/{case_id}/llm-proposals/{proposal_id}",
+        "/api/v1/submissions/{case_id}/llm-proposals/{proposal_id}/accept",
+        "/api/v1/llm",
     }
     check(
         "GET /openapi.json documents every endpoint",
@@ -156,6 +163,24 @@ def main() -> None:
     check("GET /docs -> interactive documentation", status == 200 and b"swagger" in body.lower())
 
     print(f"{len(checks)} smoke checks passed")
+
+
+def llm_status(server: Server) -> None:
+    """GET /api/v1/llm: disabled unless SCAT_LLM_PROVIDER is set here; never secrets."""
+    status, headers, body = server.request("GET", "/api/v1/llm")
+    state = json.loads(body) if status == 200 else {}
+    check(
+        "GET /api/v1/llm -> 200 {enabled, provider, model} only",
+        headers.get("cache-control") == "no-store"
+        and list(state) == ["enabled", "provider", "model"],
+    )
+    if os.environ.get("SCAT_LLM_PROVIDER"):
+        check("LLM annotation enabled", state["enabled"] is True and bool(state["model"]))
+    else:
+        check(
+            "LLM annotation disabled without configuration",
+            state == {"enabled": False, "provider": None, "model": None},
+        )
 
 
 def submissions(server: Server) -> None:

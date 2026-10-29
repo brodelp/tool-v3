@@ -8,10 +8,12 @@ from scat_validator.config import (
     CHECKS,
     CHECKS_NOT_PERFORMED,
     LABELS,
+    LLM_PROPOSAL_TTL_SECONDS,
     MAX_BODY_BYTES,
     MAX_FOREIGN_FIELDS,
     MAX_ISSUES,
     MAX_JSON_DEPTH,
+    MAX_LLM_NARRATIVE_CODE_POINTS,
     MAX_MESSAGE_BYTES,
     MAX_PATH_BYTES,
     MAX_REPORT_BYTES,
@@ -19,9 +21,12 @@ from scat_validator.config import (
     MAX_SAFE_NUMBER,
 )
 from scat_validator.contracts import (
+    LLM_SET_ID_PATTERN,
     AnnotationsUpdate,
     BatchEnvelope,
     CaseId,
+    LlmProposal,
+    LlmStatus,
     Record,
     RequestFailure,
     SubmissionExport,
@@ -32,6 +37,8 @@ from scat_validator.contracts import (
     Username,
     ValidationReport,
 )
+from scat_validator.diagnostics import Msg
+from scat_validator.reporting import ERROR_MESSAGES
 
 _REF: Final = "#/components/schemas/{model}"
 
@@ -46,6 +53,8 @@ _SCHEMA_INPUTS: Final = [
     ("AnnotationsUpdate", AnnotationsUpdate),
     ("SubmissionUpdate", SubmissionUpdate),
     ("SubmissionList", SubmissionList),
+    ("LlmStatus", LlmStatus),
+    ("LlmProposal", LlmProposal),
 ]
 
 
@@ -760,6 +769,377 @@ def user_set_operation_extra() -> dict[str, Any]:
                 "`STORAGE_UNAVAILABLE`: the database is unreachable or not configured.",
                 failure,
                 {"storage_unavailable": EXAMPLE_STORAGE_UNAVAILABLE},
+            ),
+        },
+    }
+
+
+# ---------------------------------------------------------------- stage 4: LLM annotation
+
+EXAMPLE_SET_ID: Final = "llm:anthropic:claude-x"
+EXAMPLE_GENERATED_AT: Final = "2026-10-29T14:05:09.123456Z"
+EXAMPLE_LLM_STATUS: Final[dict[str, Any]] = {
+    "enabled": True,
+    "provider": "anthropic",
+    "model": "claude-x",
+}
+EXAMPLE_LLM_DISABLED: Final[dict[str, Any]] = {"enabled": False, "provider": None, "model": None}
+EXAMPLE_LLM_SET: Final[dict[str, Any]] = {
+    "kind": "llm",
+    "provider": "anthropic",
+    "model": "claude-x",
+    "generated_at": EXAMPLE_GENERATED_AT,
+    "annotations": {"SDrug": [{"text": "Aspirin", "start": 0, "end": 7}]},
+}
+EXAMPLE_PROPOSAL: Final[dict[str, Any]] = {
+    "proposal_id": "0d7f1d5e-6a3c-4b7e-9a51-3f3f1c2b9e10",
+    "case_id": "12345678-1",
+    "username": "demo_annotator",
+    "set_id": EXAMPLE_SET_ID,
+    "set": EXAMPLE_LLM_SET,
+    "annotation_count": 1,
+    "annotations_by_label": {"SDrug": 1},
+    "replaces_existing_set": False,
+    "based_on_version": 1,
+    "expires_at": "2026-10-29T15:05:09.123456Z",
+}
+_ACCEPTED_OBSERVATION: Final = _observation(0, "", "12345678-1", annotated=False) | {
+    "annotation_count": 1,
+    "annotation_sets": {
+        EXAMPLE_SET_ID: {
+            "kind": "llm",
+            "annotation_count": 1,
+            "annotations_by_label": {"SDrug": 1},
+        }
+    },
+}
+EXAMPLE_ACCEPTED: Final[dict[str, Any]] = {
+    **EXAMPLE_UPDATE,
+    "version": 2,
+    "report": _report("single", [_ACCEPTED_OBSERVATION], []),
+}
+EXAMPLE_SET_REMOVED: Final[dict[str, Any]] = {
+    **EXAMPLE_UPDATE,
+    "version": 3,
+    "report": EXAMPLE_SINGLE_REPORT,
+}
+
+
+def _code_failure(code: Any, issues: list[Any] | None = None) -> dict[str, Any]:
+    return example_submission_failure(code, ERROR_MESSAGES[code], issues or [])
+
+
+def _issue(location: str, path: str, code: str, message: str) -> dict[str, Any]:
+    return {"location": location, "path": path, "code": code, "message": message}
+
+
+EXAMPLE_LLM_NOT_CONFIGURED: Final = _code_failure("LLM_NOT_CONFIGURED")
+EXAMPLE_LLM_TIMEOUT: Final = _code_failure("LLM_TIMEOUT")
+EXAMPLE_LLM_UNAVAILABLE: Final = _code_failure("LLM_UNAVAILABLE")
+EXAMPLE_NARRATIVE_ALTERED: Final = _code_failure(
+    "LLM_OUTPUT_INVALID", [_issue("llm_output", "", "NARRATIVE_ALTERED", Msg.NARRATIVE_ALTERED)]
+)
+EXAMPLE_NARRATIVE_HAS_MARKUP: Final = _code_failure("NARRATIVE_HAS_MARKUP")
+EXAMPLE_PROPOSAL_NOT_FOUND: Final = _code_failure("PROPOSAL_NOT_FOUND")
+EXAMPLE_SET_NOT_FOUND: Final = _code_failure("SET_NOT_FOUND")
+EXAMPLE_INVALID_PROPOSAL_ID: Final = _code_failure(
+    "INVALID_PARAMETERS", [_issue("path", "/proposal_id", "INVALID_ID", Msg.PROPOSAL_ID)]
+)
+EXAMPLE_USER_SET_ID: Final = _code_failure(
+    "INVALID_PARAMETERS", [_issue("query", "/set_id", "INVALID_SET_ID", Msg.LLM_SET_ID)]
+)
+EXAMPLE_PRECONDITION_REQUIRED: Final = _code_failure("PRECONDITION_REQUIRED")
+
+_EMPTY_BODY_NOTE: Final = (
+    "This operation takes no request body: any body (a nonzero `Content-Length` or streamed "
+    "bytes) is 413 `PAYLOAD_TOO_LARGE`."
+)
+
+_LLM_STATUS_DESCRIPTION: Final = f"""
+Whether LLM annotation is configured, naming the provider and model. Never returns keys, base
+URLs, or limits. Needs no database. {_EMPTY_BODY_NOTE}
+"""
+
+_PROPOSAL_DESCRIPTION: Final = f"""
+Runs the configured LLM on the **stored** narrative and stores the validated result as a
+proposal for {LLM_PROPOSAL_TTL_SECONDS} seconds. Nothing in the record changes, so no `If-Match`
+is needed. Accept the proposal to store its set in the record, or discard it.
+
+With a cloud provider the narrative leaves the service and is processed by that provider. One
+call per request, without retries; a call can take minutes.
+
+Order: body (413); identity parameters (422 `INVALID_PARAMETERS`); configuration (503
+`LLM_NOT_CONFIGURED`); stored submission (503, 404); narrative longer than
+{MAX_LLM_NARRATIVE_CODE_POINTS} code points (422 `NARRATIVE_TOO_LONG`); narrative containing tag
+markup such as `<AE>` (422 `NARRATIVE_HAS_MARKUP`); provider timeout (504 `LLM_TIMEOUT`); provider
+connection failure, non-2xx, or malformed response (502 `LLM_UNAVAILABLE`); unusable output (502
+`LLM_OUTPUT_INVALID` with one issue at `location` `llm_output` naming the reason); store (503).
+Nothing from the output is returned on failure. {_EMPTY_BODY_NOTE}
+{_LOOKUP_DESCRIPTION}"""
+
+_ACCEPT_DESCRIPTION: Final = f"""
+Stores a proposal's set in the record: the member with the proposal's set id in
+`annotation_sets` is replaced, or appended (creating `annotation_sets` after the record's last
+member when absent), byte for byte. The proposal is deleted in the same transaction.
+
+Order: body (413); identity parameters and `proposal_id` (422 `INVALID_PARAMETERS`; only the
+lower-case hyphenated UUID form); `If-Match` present (428); stored submission (503, 404
+`NOT_FOUND`); proposal unknown, expired, or of another submission (404 `PROPOSAL_NOT_FOUND`);
+version (412); updated-record size (at most {MAX_BODY_BYTES} bytes, 422 `LIMIT_EXCEEDED` at
+`/annotation_sets`); validation (422 ValidationReport); store (412 if the submission changed
+meanwhile). {_EMPTY_BODY_NOTE}
+{_LOOKUP_DESCRIPTION}"""
+
+_DISCARD_DESCRIPTION: Final = f"""
+Discards a proposal. Order: body (413); identity parameters and `proposal_id` (422); stored
+submission (503, 404 `NOT_FOUND`); proposal (404 `PROPOSAL_NOT_FOUND`). {_EMPTY_BODY_NOTE}
+{_LOOKUP_DESCRIPTION}"""
+
+_REMOVE_SET_DESCRIPTION: Final = f"""
+Removes one **LLM** annotation set from the record by splicing its member out of
+`annotation_sets` (which stays, possibly `{{}}`); every other byte is unchanged. The set id is a
+query parameter because a model may contain `/`. The `user` set is not removable
+(`INVALID_SET_ID`); clear it with `PUT .../annotation-sets/user` and `{{}}`.
+
+Order: body (413); identity parameters and `set_id` (422 `INVALID_PARAMETERS`); `If-Match`
+present (428); stored submission (503, 404 `NOT_FOUND`); set absent (404 `SET_NOT_FOUND`);
+version (412); validation (422 ValidationReport); store (412 if the submission changed
+meanwhile). {_EMPTY_BODY_NOTE}
+
+{_NO_AUTH_NOTE}
+"""
+
+
+def _proposal_id_parameter() -> dict[str, Any]:
+    return {
+        "name": "proposal_id",
+        "in": "path",
+        "required": True,
+        "schema": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        },
+        "description": "The `proposal_id` of an unexpired proposal, lower-case and hyphenated.",
+    }
+
+
+_SET_ID_PARAMETER: Final[dict[str, Any]] = {
+    "name": "set_id",
+    "in": "query",
+    "required": True,
+    "schema": {"type": "string", "pattern": LLM_SET_ID_PATTERN},
+    "description": (
+        "The `llm:<provider>:<model>` id of the set to remove, percent-encoded (`:` as `%3A`, "
+        "`/` as `%2F`). Required exactly once."
+    ),
+    "examples": {"anthropic": {"value": EXAMPLE_SET_ID}},
+}
+
+
+def _failure_responses(
+    statuses: dict[str, tuple[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    return {
+        status: _response(description, "SubmissionFailure", examples)
+        for status, (description, examples) in statuses.items()
+    }
+
+
+_STORAGE_503: Final = (
+    "`STORAGE_UNAVAILABLE`: the database is unreachable or not configured.",
+    {"storage_unavailable": EXAMPLE_STORAGE_UNAVAILABLE},
+)
+_INTERNAL_500: Final[tuple[str, dict[str, Any]]] = ("`INTERNAL_ERROR`.", {})
+_BODY_413: Final[tuple[str, dict[str, Any]]] = (
+    "`PAYLOAD_TOO_LARGE`: this operation takes no body (no issues).",
+    {},
+)
+
+
+def llm_status_operation_extra() -> dict[str, Any]:
+    return {
+        "description": _LLM_STATUS_DESCRIPTION,
+        "responses": {
+            "200": _response(
+                "Whether LLM annotation is enabled.",
+                "LlmStatus",
+                {"enabled": EXAMPLE_LLM_STATUS, "disabled": EXAMPLE_LLM_DISABLED},
+            ),
+            **_failure_responses({"413": _BODY_413, "500": _INTERNAL_500}),
+        },
+    }
+
+
+def proposal_operation_extra() -> dict[str, Any]:
+    return {
+        "description": _PROPOSAL_DESCRIPTION,
+        "parameters": _identity_parameters(),
+        "responses": {
+            "201": _response("The stored proposal.", "LlmProposal", {"proposal": EXAMPLE_PROPOSAL}),
+            **_failure_responses(
+                {
+                    "404": (
+                        "`NOT_FOUND`: no submission for this (case_id, username).",
+                        {"not_found": EXAMPLE_NOT_FOUND},
+                    ),
+                    "413": _BODY_413,
+                    "422": (
+                        "`INVALID_PARAMETERS`, `NARRATIVE_TOO_LONG`, or `NARRATIVE_HAS_MARKUP`.",
+                        {
+                            "missing_username": EXAMPLE_MISSING_USERNAME,
+                            "narrative_has_markup": EXAMPLE_NARRATIVE_HAS_MARKUP,
+                        },
+                    ),
+                    "500": _INTERNAL_500,
+                    "502": (
+                        "`LLM_UNAVAILABLE`, or `LLM_OUTPUT_INVALID` with one issue at "
+                        "`llm_output`: `OUTPUT_TRUNCATED`, `MODEL_REFUSED`, `UNBALANCED_TAG`, "
+                        "`NESTED_TAG`, `EMPTY_TAG`, or `NARRATIVE_ALTERED`.",
+                        {
+                            "provider_unavailable": EXAMPLE_LLM_UNAVAILABLE,
+                            "narrative_altered": EXAMPLE_NARRATIVE_ALTERED,
+                        },
+                    ),
+                    "503": (
+                        "`LLM_NOT_CONFIGURED`, or `STORAGE_UNAVAILABLE`.",
+                        {
+                            "not_configured": EXAMPLE_LLM_NOT_CONFIGURED,
+                            "storage_unavailable": EXAMPLE_STORAGE_UNAVAILABLE,
+                        },
+                    ),
+                    "504": ("`LLM_TIMEOUT`.", {"timeout": EXAMPLE_LLM_TIMEOUT}),
+                }
+            ),
+        },
+    }
+
+
+def _validated_update_responses(ok_description: str, ok_example: dict[str, Any]) -> dict[str, Any]:
+    """200, 412, 422 (ValidationReport or SubmissionFailure), and 428 of a record update."""
+    return {
+        "200": _response(
+            ok_description, "SubmissionUpdate", {"saved": ok_example}, extra_headers=_ETAG_HEADER
+        ),
+        "412": _response(
+            "`VERSION_CONFLICT`: `If-Match` does not name the current version.",
+            "SubmissionFailure",
+            {"version_conflict": EXAMPLE_VERSION_CONFLICT},
+        ),
+        "428": _response(
+            "`PRECONDITION_REQUIRED`: no `If-Match` header.",
+            "SubmissionFailure",
+            {"precondition_required": EXAMPLE_PRECONDITION_REQUIRED},
+        ),
+    }
+
+
+def _unprocessable(description: str, examples: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "422": {
+            "description": description,
+            "headers": _NO_STORE_HEADER,
+            "content": _json_content(
+                {"oneOf": [_ref("ValidationReport"), _ref("SubmissionFailure")]}, examples
+            ),
+        }
+    }
+
+
+def accept_operation_extra() -> dict[str, Any]:
+    return {
+        "description": _ACCEPT_DESCRIPTION,
+        "parameters": [
+            _identity_parameters()[0],
+            _proposal_id_parameter(),
+            _identity_parameters()[1],
+            _IF_MATCH_PARAMETER,
+        ],
+        "responses": {
+            **_validated_update_responses(
+                "Stored in the record. `ETag` names the new version.", EXAMPLE_ACCEPTED
+            ),
+            **_failure_responses(
+                {
+                    "404": (
+                        "`NOT_FOUND`, or `PROPOSAL_NOT_FOUND`: unknown, expired, or of another "
+                        "submission.",
+                        {
+                            "not_found": EXAMPLE_NOT_FOUND,
+                            "proposal_not_found": EXAMPLE_PROPOSAL_NOT_FOUND,
+                        },
+                    ),
+                    "413": _BODY_413,
+                    "500": _INTERNAL_500,
+                    "503": _STORAGE_503,
+                }
+            ),
+            **_unprocessable(
+                "Either a ValidationReport for an updated record with failures "
+                "(`INVALID_DOCUMENT`), or a SubmissionFailure for invalid parameters "
+                "(`INVALID_PARAMETERS`) or an oversized record (`INVALID_DOCUMENT`).",
+                {"invalid_proposal_id": EXAMPLE_INVALID_PROPOSAL_ID},
+            ),
+        },
+    }
+
+
+def discard_operation_extra() -> dict[str, Any]:
+    return {
+        "description": _DISCARD_DESCRIPTION,
+        "parameters": [
+            _identity_parameters()[0],
+            _proposal_id_parameter(),
+            _identity_parameters()[1],
+        ],
+        "responses": {
+            "204": _response("Discarded. No body.", None),
+            **_failure_responses(
+                {
+                    "404": (
+                        "`NOT_FOUND`, or `PROPOSAL_NOT_FOUND`.",
+                        {
+                            "not_found": EXAMPLE_NOT_FOUND,
+                            "proposal_not_found": EXAMPLE_PROPOSAL_NOT_FOUND,
+                        },
+                    ),
+                    "413": _BODY_413,
+                    "422": (
+                        "`INVALID_PARAMETERS`.",
+                        {"invalid_proposal_id": EXAMPLE_INVALID_PROPOSAL_ID},
+                    ),
+                    "500": _INTERNAL_500,
+                    "503": _STORAGE_503,
+                }
+            ),
+        },
+    }
+
+
+def remove_set_operation_extra() -> dict[str, Any]:
+    return {
+        "description": _REMOVE_SET_DESCRIPTION,
+        "parameters": [*_identity_parameters(), _SET_ID_PARAMETER, _IF_MATCH_PARAMETER],
+        "responses": {
+            **_validated_update_responses(
+                "Removed. `ETag` names the new version.", EXAMPLE_SET_REMOVED
+            ),
+            **_failure_responses(
+                {
+                    "404": (
+                        "`NOT_FOUND`, or `SET_NOT_FOUND`: the record has no set with this id.",
+                        {"not_found": EXAMPLE_NOT_FOUND, "set_not_found": EXAMPLE_SET_NOT_FOUND},
+                    ),
+                    "413": _BODY_413,
+                    "500": _INTERNAL_500,
+                    "503": _STORAGE_503,
+                }
+            ),
+            **_unprocessable(
+                "Either a ValidationReport for an updated record with failures "
+                "(`INVALID_DOCUMENT`), or a SubmissionFailure for invalid parameters "
+                "(`INVALID_PARAMETERS`).",
+                {"user_set_id": EXAMPLE_USER_SET_ID},
             ),
         },
     }

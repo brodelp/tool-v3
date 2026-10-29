@@ -1,16 +1,24 @@
 """OpenAPI contract and schema/runtime agreement (V20)."""
 
 import json
+import re
+from collections.abc import Callable
 from typing import Any
 
+import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
+from scat_validator.api import app
 from scat_validator.config import LABELS, MAX_SAFE_NUMBER, MODEL_PATTERN, PROVIDER_PATTERN
 from scat_validator.contracts import (
     CASE_ID_PATTERN,
+    LLM_PROPOSAL_ADAPTER,
+    LLM_STATUS_ADAPTER,
     REQUEST_FAILURE_ADAPTER,
     SET_ID_PATTERN,
+    SUBMISSION_FAILURE_ADAPTER,
+    SUBMISSION_UPDATE_ADAPTER,
     VALIDATION_REPORT_ADAPTER,
     BatchEnvelope,
     Record,
@@ -242,8 +250,16 @@ def test_response_variants(spec: dict[str, Any]) -> None:
         "NOT_FOUND",
         "PRECONDITION_REQUIRED",
         "VERSION_CONFLICT",
+        "LLM_NOT_CONFIGURED",
+        "LLM_UNAVAILABLE",
+        "LLM_TIMEOUT",
+        "LLM_OUTPUT_INVALID",
+        "NARRATIVE_TOO_LONG",
+        "NARRATIVE_HAS_MARKUP",
+        "PROPOSAL_NOT_FOUND",
+        "SET_NOT_FOUND",
     }
-    assert schemas(spec)["Location"]["enum"] == ["body", "query", "path"]
+    assert schemas(spec)["Location"]["enum"] == ["body", "query", "path", "llm_output"]
 
 
 def examples_for(operation: dict[str, Any], status: str) -> dict[str, Any]:
@@ -497,3 +513,186 @@ def test_storage_unavailable_example_matches_runtime(spec: dict[str, Any]) -> No
     response = export("12345678-1", "username=demo_annotator")
     assert response.status == 503
     assert response.json() == examples_for(get, "503")["storage_unavailable"]["value"]
+
+
+# ---------------------------------------------------------------- stage 4 LLM routes (L12)
+
+LLM_OPERATIONS: dict[tuple[str, str], tuple[set[str], list[tuple[str, str]]]] = {
+    ("/api/v1/llm", "get"): ({"200", "413", "500"}, []),
+    ("/api/v1/submissions/{case_id}/llm-proposals", "post"): (
+        {"201", "404", "413", "422", "500", "502", "503", "504"},
+        [("case_id", "path"), ("username", "query")],
+    ),
+    ("/api/v1/submissions/{case_id}/llm-proposals/{proposal_id}/accept", "post"): (
+        {"200", "404", "412", "413", "422", "428", "500", "503"},
+        [
+            ("case_id", "path"),
+            ("proposal_id", "path"),
+            ("username", "query"),
+            ("If-Match", "header"),
+        ],
+    ),
+    ("/api/v1/submissions/{case_id}/llm-proposals/{proposal_id}", "delete"): (
+        {"204", "404", "413", "422", "500", "503"},
+        [("case_id", "path"), ("proposal_id", "path"), ("username", "query")],
+    ),
+    ("/api/v1/submissions/{case_id}/annotation-sets", "delete"): (
+        {"200", "404", "412", "413", "422", "428", "500", "503"},
+        [("case_id", "path"), ("username", "query"), ("set_id", "query"), ("If-Match", "header")],
+    ),
+}
+SCHEMA_ADAPTERS: dict[str, TypeAdapter[Any]] = {
+    "LlmStatus": LLM_STATUS_ADAPTER,
+    "LlmProposal": LLM_PROPOSAL_ADAPTER,
+    "SubmissionFailure": SUBMISSION_FAILURE_ADAPTER,
+    "SubmissionUpdate": SUBMISSION_UPDATE_ADAPTER,
+    "ValidationReport": VALIDATION_REPORT_ADAPTER,
+}
+
+
+def llm_operation(spec: dict[str, Any], path: str, method: str) -> dict[str, Any]:
+    operation: dict[str, Any] = spec["paths"][path][method]
+    return operation
+
+
+def test_llm_operations_are_documented(spec: dict[str, Any]) -> None:
+    for (path, method), (statuses, parameters) in LLM_OPERATIONS.items():
+        operation = llm_operation(spec, path, method)
+        assert set(operation["responses"]) == statuses, path
+        assert [(p["name"], p["in"]) for p in operation.get("parameters", [])] == parameters
+        assert "requestBody" not in operation
+        assert "413" in operation["responses"]
+        for response in operation["responses"].values():
+            assert response["headers"]["Cache-Control"]["schema"]["enum"] == ["no-store"]
+    status = schemas(spec)["LlmStatus"]
+    assert list(status["properties"]) == ["enabled", "provider", "model"]
+    assert status["additionalProperties"] is False
+    proposal = schemas(spec)["LlmProposal"]
+    assert list(proposal["properties"]) == [
+        "proposal_id",
+        "case_id",
+        "username",
+        "set_id",
+        "set",
+        "annotation_count",
+        "annotations_by_label",
+        "replaces_existing_set",
+        "based_on_version",
+        "expires_at",
+    ]
+    set_id = llm_operation(spec, "/api/v1/submissions/{case_id}/annotation-sets", "delete")
+    pattern = set_id["parameters"][2]["schema"]["pattern"]
+    assert re.fullmatch(pattern, "llm:openai:org/m:8b")
+    assert not re.fullmatch(pattern, "user")
+
+
+def _schema_name(schema: dict[str, Any]) -> list[str]:
+    if "oneOf" in schema:
+        return [branch["$ref"].rsplit("/", 1)[1] for branch in schema["oneOf"]]
+    return [schema["$ref"].rsplit("/", 1)[1]]
+
+
+def test_llm_examples_validate_against_schemas(spec: dict[str, Any]) -> None:
+    seen = 0
+    for path, method in LLM_OPERATIONS:
+        for response in llm_operation(spec, path, method)["responses"].values():
+            content = response.get("content", {}).get("application/json")
+            if content is None:
+                continue
+            names = _schema_name(content["schema"])
+            for example in content.get("examples", {}).values():
+                body = json.dumps(example["value"])
+                matches = []
+                for name in names:
+                    try:
+                        SCHEMA_ADAPTERS[name].validate_json(body, strict=True)
+                    except ValidationError:
+                        continue
+                    matches.append(name)
+                assert len(matches) == 1, (path, example)
+                seen += 1
+    assert seen >= 20
+
+
+def test_runtime_llm_responses_conform(
+    spec: dict[str, Any], storage: Storage, llm: Callable[[Any], Any]
+) -> None:
+    llm("<SDRUG>Aspirin</SDRUG> caused nausea.")
+    state = app.state
+    status_op = llm_operation(spec, "/api/v1/llm", "get")
+    status = call("GET", "/api/v1/llm", headers=[])
+    assert status.json() == examples_for(status_op, "200")["enabled"]["value"]
+    settings = state.llm_settings
+    state.llm_settings = None
+    disabled = call("GET", "/api/v1/llm", headers=[])
+    assert disabled.json() == examples_for(status_op, "200")["disabled"]["value"]
+    proposals = "/api/v1/submissions/12345678-1/llm-proposals"
+    propose_op = llm_operation(spec, "/api/v1/submissions/{case_id}/llm-proposals", "post")
+    not_configured = call("POST", proposals, query="username=demo_annotator", headers=[])
+    assert not_configured.json() == examples_for(propose_op, "503")["not_configured"]["value"]
+    state.llm_settings = settings
+
+    query = "username=demo_annotator"
+    not_found = call("POST", proposals, query=query, headers=[])
+    assert not_found.json() == examples_for(propose_op, "404")["not_found"]["value"]
+    assert submit(dumps(EXAMPLE_RECORD)).status == 201
+    created = call("POST", proposals, query=query, headers=[])
+    assert created.status == 201
+    LLM_PROPOSAL_ADAPTER.validate_json(created.body, strict=True)
+    body = created.json()
+    documented = examples_for(propose_op, "201")["proposal"]["value"]
+    assert body == documented | {name: body[name] for name in ("proposal_id", "expires_at")}
+
+    llm("Aspirin caused nausea!")
+    altered = call("POST", proposals, query=query, headers=[])
+    assert altered.json() == examples_for(propose_op, "502")["narrative_altered"]["value"]
+    llm(lambda request: httpx.Response(503))
+    unavailable = call("POST", proposals, query=query, headers=[])
+    assert unavailable.json() == examples_for(propose_op, "502")["provider_unavailable"]["value"]
+
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    llm(timeout)
+    timed_out = call("POST", proposals, query=query, headers=[])
+    assert timed_out.json() == examples_for(propose_op, "504")["timeout"]["value"]
+
+    accept_path = "/api/v1/submissions/{case_id}/llm-proposals/{proposal_id}/accept"
+    accept_op = llm_operation(spec, accept_path, "post")
+    proposal = f"{proposals}/{body['proposal_id']}"
+    bad_id = call("POST", f"{proposals}/nope/accept", query=query, headers=[])
+    assert bad_id.json() == examples_for(accept_op, "422")["invalid_proposal_id"]["value"]
+    missing = call("POST", f"{proposal}/accept", query=query, headers=[])
+    assert missing.json() == examples_for(accept_op, "428")["precondition_required"]["value"]
+    if_match = [(b"if-match", b'"1"')]
+    accepted = call("POST", f"{proposal}/accept", query=query, headers=if_match)
+    assert accepted.status == 200
+    timestamps = {name: accepted.json()[name] for name in ("submitted_at", "updated_at")}
+    assert accepted.json() == examples_for(accept_op, "200")["saved"]["value"] | timestamps
+    again = call("POST", f"{proposal}/accept", query=query, headers=[(b"if-match", b'"2"')])
+    assert again.json() == examples_for(accept_op, "404")["proposal_not_found"]["value"]
+    stale = call("POST", f"{proposal}/accept", query=query, headers=if_match)
+    assert stale.json() == examples_for(accept_op, "404")["proposal_not_found"]["value"]
+
+    discard_op = llm_operation(
+        spec, "/api/v1/submissions/{case_id}/llm-proposals/{proposal_id}", "delete"
+    )
+    gone = call("DELETE", proposal, query=query, headers=[])
+    assert gone.json() == examples_for(discard_op, "404")["proposal_not_found"]["value"]
+
+    sets_op = llm_operation(spec, "/api/v1/submissions/{case_id}/annotation-sets", "delete")
+    sets = "/api/v1/submissions/12345678-1/annotation-sets"
+    set_query = query + "&set_id=llm%3Aanthropic%3Aclaude-x"
+    user = call("DELETE", sets, query=query + "&set_id=user", headers=[])
+    assert user.json() == examples_for(sets_op, "422")["user_set_id"]["value"]
+    conflict = call("DELETE", sets, query=set_query, headers=if_match)
+    assert conflict.json() == examples_for(sets_op, "412")["version_conflict"]["value"]
+    removed = call("DELETE", sets, query=set_query, headers=[(b"if-match", b'"2"')])
+    assert removed.status == 200
+    SUBMISSION_UPDATE_ADAPTER.validate_json(removed.body, strict=True)
+    timestamps = {name: removed.json()[name] for name in ("submitted_at", "updated_at")}
+    assert removed.json() == examples_for(sets_op, "200")["saved"]["value"] | timestamps
+    absent = call("DELETE", sets, query=set_query, headers=[(b"if-match", b'"3"')])
+    assert absent.json() == examples_for(sets_op, "404")["set_not_found"]["value"]
+    for response in (not_found, altered, unavailable, timed_out, bad_id, again, gone, absent):
+        SUBMISSION_FAILURE_ADAPTER.validate_json(response.body, strict=True)

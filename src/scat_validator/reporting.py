@@ -7,6 +7,7 @@ from typing import Final
 from scat_validator.config import (
     CHECKS_NOT_PERFORMED,
     MAX_BATCH_RECORDS,
+    MAX_LLM_NARRATIVE_CODE_POINTS,
     MAX_REPORT_BYTES,
     MAX_RESPONSE_BYTES,
     MIN_BATCH_RECORDS,
@@ -42,6 +43,14 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "NOT_FOUND": "No submission exists for this case_id and username.",
     "PRECONDITION_REQUIRED": "If-Match must name the submission version being replaced.",
     "VERSION_CONFLICT": "The submission changed since this version was read.",
+    "LLM_NOT_CONFIGURED": "LLM annotation is not configured on this service.",
+    "LLM_UNAVAILABLE": "The LLM provider could not be reached or gave an unusable response.",
+    "LLM_TIMEOUT": "The LLM provider did not respond in time.",
+    "LLM_OUTPUT_INVALID": "The LLM output could not be used; nothing was stored.",
+    "NARRATIVE_TOO_LONG": "The narrative exceeds the 50000-code-point limit for LLM annotation.",
+    "NARRATIVE_HAS_MARKUP": "The narrative contains LLM tag markup, so it cannot be annotated.",
+    "PROPOSAL_NOT_FOUND": "No unexpired proposal with this id exists for this submission.",
+    "SET_NOT_FOUND": "The record has no annotation set with this id.",
 }
 REPORT_INVALID_MESSAGE: Final = "One or more records are invalid."
 
@@ -60,7 +69,16 @@ HTTP_STATUS: Final[dict[ErrorCode, int]] = {
     "NOT_FOUND": 404,
     "PRECONDITION_REQUIRED": 428,
     "VERSION_CONFLICT": 412,
+    "LLM_NOT_CONFIGURED": 503,
+    "LLM_UNAVAILABLE": 502,
+    "LLM_TIMEOUT": 504,
+    "LLM_OUTPUT_INVALID": 502,
+    "NARRATIVE_TOO_LONG": 422,
+    "NARRATIVE_HAS_MARKUP": 422,
+    "PROPOSAL_NOT_FOUND": 404,
+    "SET_NOT_FOUND": 404,
 }
+assert f" {MAX_LLM_NARRATIVE_CODE_POINTS}-" in ERROR_MESSAGES["NARRATIVE_TOO_LONG"]
 
 
 class ResponseBudgetExceeded(Exception):

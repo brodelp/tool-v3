@@ -6,9 +6,12 @@ at the end. Nothing touches the developer's own database. Stage 1 tests need non
 """
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from uuid import uuid4
 
+import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -16,6 +19,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
 
 from scat_validator.api import app
+from scat_validator.llm.settings import LlmSettings
 from scat_validator.storage import (
     DATABASE_URL_VARIABLE,
     Storage,
@@ -91,3 +95,58 @@ def unreachable_storage() -> Iterator[None]:
     yield
     app.state.storage = None
     unreachable.dispose()
+
+
+# ---------------------------------------------------------------- stage 4: LLM
+
+
+FIXED_NOW = datetime(2026, 10, 29, 14, 5, 9, 123456, tzinfo=UTC)
+LLM_SECRET_KEY = "sk-KEYSECRET"
+LLM_BASE_URL = "https://user:pw@llm.internal.example"
+
+type FakeOutput = str | Callable[[httpx.Request], httpx.Response]
+
+
+@dataclass
+class FakeLlm:
+    """The installed fake provider: Anthropic-shaped responses from ``output``."""
+
+    output: FakeOutput = ""
+    requests: list[httpx.Request] = field(default_factory=list)
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        if callable(self.output):
+            return self.output(request)
+        body = {"content": [{"type": "text", "text": self.output}], "stop_reason": "end_turn"}
+        return httpx.Response(200, json=body)
+
+
+LLM_SETTINGS = LlmSettings(
+    provider="anthropic",
+    model="claude-x",
+    api_key=LLM_SECRET_KEY,
+    base_url=LLM_BASE_URL,
+    timeout_seconds=5.0,
+    max_output_tokens=1000,
+)
+
+
+@pytest.fixture
+def llm() -> Iterator[Callable[[FakeOutput], FakeLlm]]:
+    """Install a configured fake LLM (``llm(output)``), a fixed clock, and restore afterwards."""
+    state = app.state
+    saved = (state.llm_settings, state.llm_client, state.clock)
+    clients: list[httpx.Client] = []
+
+    def install(output: FakeOutput) -> FakeLlm:
+        fake = FakeLlm(output)
+        client = httpx.Client(transport=httpx.MockTransport(fake.handle))
+        clients.append(client)
+        state.llm_settings, state.llm_client, state.clock = LLM_SETTINGS, client, lambda: FIXED_NOW
+        return fake
+
+    yield install
+    state.llm_settings, state.llm_client, state.clock = saved
+    for client in clients:
+        client.close()

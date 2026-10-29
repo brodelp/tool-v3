@@ -23,6 +23,7 @@ class ProposedSet:
     set_json: str
     annotation_count: int
     annotations_by_label: dict[str, int]
+    output_code_points: int
 
 
 def _dumps(value: object) -> str:
@@ -36,11 +37,15 @@ def annotate(
     now: Callable[[], datetime],
 ) -> ProposedSet:
     completion = complete(settings, render_prompt(narrative), client)
-    if completion.stop == "truncated":
-        raise OutputInvalid("OUTPUT_TRUNCATED")
-    if completion.stop == "refused":
-        raise OutputInvalid("MODEL_REFUSED")
-    spans = parse_tagged(completion.text, narrative)
+    try:
+        if completion.stop == "truncated":
+            raise OutputInvalid("OUTPUT_TRUNCATED")
+        if completion.stop == "refused":
+            raise OutputInvalid("MODEL_REFUSED")
+        spans = parse_tagged(completion.text, narrative)
+    except OutputInvalid as invalid:
+        invalid.output_code_points = len(completion.text)
+        raise
     generated_at = now().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     annotation_set = {
         "kind": "llm",
@@ -59,6 +64,7 @@ def annotate(
         set_json=set_json,
         annotation_count=sum(len(v) for v in spans.values()),
         annotations_by_label={label: len(v) for label, v in spans.items()},
+        output_code_points=len(completion.text),
     )
 
 

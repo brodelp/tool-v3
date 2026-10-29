@@ -133,6 +133,9 @@ SET_ID_PATTERN: Final = (
     f"^({USER_SET_ID}|{LLM_SET_PREFIX}{_unanchored(PROVIDER_PATTERN)}:"
     f"{_unanchored(MODEL_PATTERN)})$"
 )
+LLM_SET_ID_PATTERN: Final = (
+    f"^{LLM_SET_PREFIX}{_unanchored(PROVIDER_PATTERN)}:{_unanchored(MODEL_PATTERN)}$"
+)
 GENERATED_AT_PATTERN: Final = (
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$"
 )
@@ -320,7 +323,7 @@ class AnnotationsUpdate(BaseModel):
 
 type Mode = Literal["single", "batch"]
 type CheckStatus = Literal["passed", "failed", "skipped"]
-type Location = Literal["body", "query", "path"]
+type Location = Literal["body", "query", "path", "llm_output"]
 type IssueCode = Literal[
     "REQUIRED_FIELD",
     "INVALID_TYPE",
@@ -347,6 +350,12 @@ type IssueCode = Literal[
     "INVALID_SET_KIND",
     "SET_ID_MISMATCH",
     "INVALID_TIMESTAMP",
+    "OUTPUT_TRUNCATED",
+    "MODEL_REFUSED",
+    "UNBALANCED_TAG",
+    "NESTED_TAG",
+    "EMPTY_TAG",
+    "NARRATIVE_ALTERED",
 ]
 type ErrorCode = Literal[
     "INVALID_JSON",
@@ -363,6 +372,14 @@ type ErrorCode = Literal[
     "NOT_FOUND",
     "PRECONDITION_REQUIRED",
     "VERSION_CONFLICT",
+    "LLM_NOT_CONFIGURED",
+    "LLM_UNAVAILABLE",
+    "LLM_TIMEOUT",
+    "LLM_OUTPUT_INVALID",
+    "NARRATIVE_TOO_LONG",
+    "NARRATIVE_HAS_MARKUP",
+    "PROPOSAL_NOT_FOUND",
+    "SET_NOT_FOUND",
 ]
 
 
@@ -670,6 +687,62 @@ class SubmissionFailure(TypedDict):
 SubmissionFailure.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
 
 
+# ---------------------------------------------------------------- stage 4: LLM annotation
+
+
+class LlmStatus(TypedDict):
+    """Whether LLM annotation is configured, and with which provider and model. Never carries
+    keys, base URLs, or limits."""
+
+    enabled: bool
+    provider: Annotated[str | None, Field(description="Null when disabled.")]
+    model: Annotated[str | None, Field(description="Null when disabled.")]
+
+
+LlmStatus.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
+
+
+class LlmProposal(TypedDict):
+    """An unsaved LLM annotation set (HTTP 201). Nothing in the record changed; accept or
+    discard it before `expires_at`."""
+
+    proposal_id: Annotated[
+        str,
+        Field(
+            json_schema_extra={"format": "uuid"},
+            description="Lower-case hyphenated UUID naming the stored proposal.",
+        ),
+    ]
+    case_id: str
+    username: str
+    set_id: Annotated[
+        str,
+        Field(pattern=LLM_SET_ID_PATTERN, description="The `llm:<provider>:<model>` set id."),
+    ]
+    set: Annotated[
+        AnnotationSet,
+        Field(description="The proposed `llm` set object, exactly as it would be stored."),
+    ]
+    annotation_count: Annotated[int, Field(ge=0)]
+    annotations_by_label: AnnotationCounts
+    replaces_existing_set: Annotated[
+        bool, Field(description="True when the stored record already has a set with this id.")
+    ]
+    based_on_version: Annotated[
+        int, Field(ge=1, description="The submission version the narrative was read from.")
+    ]
+    expires_at: Annotated[
+        str,
+        Field(
+            json_schema_extra={"format": "date-time"},
+            description="When the proposal is discarded unless accepted: RFC 3339 UTC.",
+        ),
+    ]
+
+
+LlmProposal.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
+
+
 VALIDATION_REPORT_ADAPTER: Final[TypeAdapter[ValidationReport]] = TypeAdapter(ValidationReport)
 REQUEST_FAILURE_ADAPTER: Final[TypeAdapter[RequestFailure]] = TypeAdapter(RequestFailure)
 SUBMISSION_RECEIPT_ADAPTER: Final[TypeAdapter[SubmissionReceipt]] = TypeAdapter(SubmissionReceipt)
@@ -677,3 +750,5 @@ SUBMISSION_EXPORT_ADAPTER: Final[TypeAdapter[SubmissionExport]] = TypeAdapter(Su
 SUBMISSION_FAILURE_ADAPTER: Final[TypeAdapter[SubmissionFailure]] = TypeAdapter(SubmissionFailure)
 SUBMISSION_UPDATE_ADAPTER: Final[TypeAdapter[SubmissionUpdate]] = TypeAdapter(SubmissionUpdate)
 SUBMISSION_LIST_ADAPTER: Final[TypeAdapter[SubmissionList]] = TypeAdapter(SubmissionList)
+LLM_STATUS_ADAPTER: Final[TypeAdapter[LlmStatus]] = TypeAdapter(LlmStatus)
+LLM_PROPOSAL_ADAPTER: Final[TypeAdapter[LlmProposal]] = TypeAdapter(LlmProposal)

@@ -94,6 +94,19 @@ class Msg:
     TIMESTAMP: Final = "generated_at must be an RFC 3339 UTC timestamp ending in Z."
     UNKNOWN_UPDATE_FIELD: Final = "The request body allows only the annotations property."
     UPDATED_RECORD_SIZE: Final = "The updated record must not exceed 5242880 bytes."
+    PROPOSAL_ID: Final = "proposal_id must be a UUID in lower-case hyphenated form."
+    SET_ID_REQUIRED: Final = "The set_id query parameter is required."
+    SET_ID_REPEATED: Final = "set_id must not be repeated."
+    LLM_SET_ID: Final = "set_id must be the id of an llm set, llm:<provider>:<model>."
+    UNKNOWN_SET_REMOVAL_QUERY: Final = (
+        "Only the username and set_id query parameters are supported."
+    )
+    OUTPUT_TRUNCATED: Final = "The model output was cut off by the output token limit."
+    MODEL_REFUSED: Final = "The model declined to annotate the narrative."
+    UNBALANCED_TAG: Final = "A closing tag does not match the open tag, or a tag is left open."
+    NESTED_TAG: Final = "A tag was opened while another tag was still open."
+    EMPTY_TAG: Final = "A tag encloses no text."
+    NARRATIVE_ALTERED: Final = "The output without its tags differs from the stored narrative."
 
 
 assert f" {MAX_ANNOTATION_SETS} " in Msg.SET_LIMIT
