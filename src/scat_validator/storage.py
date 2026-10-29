@@ -10,6 +10,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
@@ -17,11 +18,14 @@ from sqlalchemy import (
     Column,
     DateTime,
     Engine,
+    ForeignKey,
     Identity,
+    Index,
     MetaData,
     Table,
     Text,
     UniqueConstraint,
+    Uuid,
     create_engine,
     delete,
     func,
@@ -33,6 +37,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+from sqlalchemy.sql.dml import Delete, Update
+from sqlalchemy.sql.expression import ScalarSelect
 
 from scat_validator.config import (
     DB_CONNECT_TIMEOUT_SECONDS,
@@ -65,6 +71,24 @@ submissions = Table(
         name="submissions_username_length",
     ),
     CheckConstraint("version >= 1", name="submissions_version_positive"),
+)
+
+llm_proposals = Table(
+    "llm_proposals",
+    metadata,
+    Column("id", Uuid, primary_key=True),
+    Column(
+        "submission_id",
+        BigInteger,
+        ForeignKey("submissions.id", ondelete="CASCADE", name="llm_proposals_submission_id_fkey"),
+        nullable=False,
+    ),
+    Column("set_id", Text, nullable=False),
+    Column("set_json", Text, nullable=False),
+    Column("based_on_version", BigInteger, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Index("ix_llm_proposals_submission_id", "submission_id"),
 )
 
 # Failures that mean "the database cannot be reached", answered with 503 rather than 500.
@@ -105,6 +129,66 @@ class SubmissionVersion:
     submitted_at: datetime
     updated_at: datetime
     version: int
+
+
+@dataclass(frozen=True, slots=True)
+class StoredProposal:
+    """One unaccepted LLM annotation set (stage 4 spec §3)."""
+
+    id: UUID
+    set_id: str
+    set_json: str
+    based_on_version: int
+    created_at: datetime
+    expires_at: datetime
+
+
+_PROPOSAL_COLUMNS = (
+    llm_proposals.c.id,
+    llm_proposals.c.set_id,
+    llm_proposals.c.set_json,
+    llm_proposals.c.based_on_version,
+    llm_proposals.c.created_at,
+    llm_proposals.c.expires_at,
+)
+
+
+class _NothingToAccept(Exception):
+    """Raised inside a transaction to roll it back; carries no data."""
+
+
+def _guarded_update(case_id: str, username: str, expected_version: int, source_json: str) -> Update:
+    return (
+        update(submissions)
+        .where(
+            submissions.c.case_id == case_id,
+            submissions.c.username == username,
+            submissions.c.version == expected_version,
+        )
+        .values(source_json=source_json, version=submissions.c.version + 1, updated_at=func.now())
+        .returning(
+            submissions.c.case_id,
+            submissions.c.submitted_at,
+            submissions.c.updated_at,
+            submissions.c.version,
+        )
+    )
+
+
+def _delete_proposal(proposal_id: UUID, case_id: str, username: str) -> Delete:
+    return delete(llm_proposals).where(
+        llm_proposals.c.id == proposal_id,
+        llm_proposals.c.submission_id == _submission_id(case_id, username),
+        llm_proposals.c.expires_at > func.now(),
+    )
+
+
+def _submission_id(case_id: str, username: str) -> ScalarSelect[int]:
+    return (
+        select(submissions.c.id)
+        .where(submissions.c.case_id == case_id, submissions.c.username == username)
+        .scalar_subquery()
+    )
 
 
 class Storage:
@@ -168,25 +252,7 @@ class Storage:
         self, case_id: str, username: str, expected_version: int, source_json: str
     ) -> SubmissionVersion | None:
         """Replace the current record if it is still at ``expected_version``; else ``None``."""
-        statement = (
-            update(submissions)
-            .where(
-                submissions.c.case_id == case_id,
-                submissions.c.username == username,
-                submissions.c.version == expected_version,
-            )
-            .values(
-                source_json=source_json,
-                version=submissions.c.version + 1,
-                updated_at=func.now(),
-            )
-            .returning(
-                submissions.c.case_id,
-                submissions.c.submitted_at,
-                submissions.c.updated_at,
-                submissions.c.version,
-            )
-        )
+        statement = _guarded_update(case_id, username, expected_version, source_json)
         with self.engine.begin() as connection:
             row = connection.execute(statement).one_or_none()
         return None if row is None else SubmissionVersion(*row)
@@ -199,6 +265,76 @@ class Storage:
         with self.engine.begin() as connection:
             deleted = connection.execute(statement).rowcount
         return deleted == 1
+
+    def insert_proposal(
+        self,
+        case_id: str,
+        username: str,
+        set_id: str,
+        set_json: str,
+        based_on_version: int,
+        ttl_seconds: int,
+    ) -> StoredProposal | None:
+        """Store a proposal; ``None`` when the submission is gone. Purges expired proposals."""
+        statement = (
+            insert(llm_proposals)
+            .values(
+                id=uuid4(),
+                submission_id=_submission_id(case_id, username),
+                set_id=set_id,
+                set_json=set_json,
+                based_on_version=based_on_version,
+                expires_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, ttl_seconds),
+            )
+            .returning(*_PROPOSAL_COLUMNS)
+        )
+        with self.engine.begin() as connection:
+            connection.execute(
+                delete(llm_proposals).where(llm_proposals.c.expires_at <= func.now())
+            )
+            if connection.execute(select(_submission_id(case_id, username))).scalar() is None:
+                return None
+            row = connection.execute(statement).one()
+        return StoredProposal(*row)
+
+    def fetch_proposal(
+        self, proposal_id: UUID, case_id: str, username: str
+    ) -> StoredProposal | None:
+        """An unexpired proposal of this submission, or ``None``."""
+        statement = select(*_PROPOSAL_COLUMNS).where(
+            llm_proposals.c.id == proposal_id,
+            llm_proposals.c.submission_id == _submission_id(case_id, username),
+            llm_proposals.c.expires_at > func.now(),
+        )
+        with self.engine.connect() as connection:
+            row = connection.execute(statement).one_or_none()
+        return None if row is None else StoredProposal(*row)
+
+    def delete_proposal(self, proposal_id: UUID, case_id: str, username: str) -> bool:
+        with self.engine.begin() as connection:
+            return (
+                connection.execute(_delete_proposal(proposal_id, case_id, username)).rowcount == 1
+            )
+
+    def accept_proposal(
+        self,
+        proposal_id: UUID,
+        case_id: str,
+        username: str,
+        expected_version: int,
+        source_json: str,
+    ) -> SubmissionVersion | None:
+        """Guarded record update plus proposal delete in one transaction; else ``None``."""
+        update_statement = _guarded_update(case_id, username, expected_version, source_json)
+        try:
+            with self.engine.begin() as connection:
+                row = connection.execute(update_statement).one_or_none()
+                removed = connection.execute(_delete_proposal(proposal_id, case_id, username))
+                if row is None or removed.rowcount != 1:
+                    raise _NothingToAccept
+        except _NothingToAccept:
+            return None
+        return SubmissionVersion(*row)
 
     def dispose(self) -> None:
         self.engine.dispose()
