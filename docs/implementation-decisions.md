@@ -323,7 +323,23 @@ Choices the stage 4 spec and design leave open:
   makes accept answer 412.
 - **Provider calls** use raw httpx, no SDK; Anthropic API version 2026-10-21 and no sampling
   parameters. The httpx/httpcore loggers are set to WARNING because httpx logs request URLs (which
-  may carry credentials) at INFO.
+  may carry credentials) at INFO. The timeout (default 600 s) is httpx's per-read timeout (the
+  wait between bytes), not a total cap; connecting has its own 10 s limit. The `openai` provider
+  sends `max_tokens`, so OpenAI reasoning models that require `max_completion_tokens` are not
+  supported in this revision.
+- **Concurrent runs.** At most `LLM_MAX_CONCURRENT_RUNS` (4, `config.py`) provider calls run at
+  once, each in a worker thread under a dedicated `anyio.CapacityLimiter` (created lazily, one
+  per event loop, because a limiter binds to its loop); further runs queue. A cancelled request
+  does not stop a call already running: the worker finishes or times out and keeps its slot
+  until then.
+- **Upstream status.** `ProviderUnavailable` carries no message but has `upstream_status`, the
+  HTTP status of a non-2xx provider response (None for no response or an unusable 2xx). The LLM
+  log line adds `upstream_status=<n>` (`-` when None); the status is a number from the provider,
+  not a value from the request, so it may be logged.
+- **Base URL validation.** `SCAT_LLM_BASE_URL` (after trimming one trailing `/`) must parse with
+  `httpx.URL`, use `http` or `https`, have a host, and have a port in 1-65535 (httpx itself
+  accepts any port number); otherwise the feature is disabled with one warning naming the
+  variable, never its value. `complete()` also maps `httpx.InvalidURL` to `ProviderUnavailable`.
 - **Bodyless routes** reject any body with 413 after reading at most one byte;
   `GET /api/v1/llm` ignores query parameters.
 - **`set_id` is a query parameter** (models may contain `/`). Removal answers 404 `SET_NOT_FOUND`
@@ -332,7 +348,11 @@ Choices the stage 4 spec and design leave open:
 - **Parser errors.** The parser reports the first error in stream order (spec §5.3, "scanned once,
   in order").
 - **Frontend.** User edits live in their own state; LLM sets and proposals are read-only and never
-  sent. The window keydown handler ignores events already handled (`defaultPrevented`), so tab
+  sent, so proposal annotations keep no `source` text (stored LLM sets loaded from an export keep
+  their exact text, as user annotations do). Accept answering `LIMIT_EXCEEDED` at
+  `/annotation_sets` shows "This case already has 16 annotation sets. Remove one before accepting
+  another." (16 is `MAX_ANNOTATION_SETS`, generated into `labels.ts` from `config.py`). The
+  "Annotate with LLM" button is disabled while an accept is in flight. The window keydown handler ignores events already handled (`defaultPrevented`), so tab
   arrow keys don't page.
 - **OpenAPI examples.** FastAPI drops `null` from examples, so `custom_openapi` copies response
   examples back from each route's `openapi_extra`.

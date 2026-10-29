@@ -31,6 +31,11 @@ application.
 | `GET /api/v1/submissions/{case_id}?username=…` | Export one stored record, wrapped with `submitted_at`, `updated_at`, `version`, and `offset_unit`; `ETag` names the version |
 | `PUT /api/v1/submissions/{case_id}/annotation-sets/user?username=…` | Replace the record's user annotation set (`If-Match` required; 412 if the version changed) |
 | `DELETE /api/v1/submissions/{case_id}?username=…` | Permanently delete one stored record (204) |
+| `GET /api/v1/llm` | Whether LLM annotation is configured, and its provider and model (never the key or URL) |
+| `POST /api/v1/submissions/{case_id}/llm-proposals?username=…` | Ask the configured model to annotate the stored narrative; stores a proposal (201) |
+| `POST /api/v1/submissions/{case_id}/llm-proposals/{proposal_id}/accept?username=…` | Store the proposal as an `llm` annotation set (`If-Match` required; 412 if the version changed) |
+| `DELETE /api/v1/submissions/{case_id}/llm-proposals/{proposal_id}?username=…` | Discard a proposal (204) |
+| `DELETE /api/v1/submissions/{case_id}/annotation-sets?username=…&set_id=…` | Remove one `llm` annotation set (`If-Match` required) |
 | `GET /healthz` | Liveness: exactly `{"status":"ok"}` (no database check) |
 | `GET /docs`, `GET /openapi.json` | Interactive documentation and the OpenAPI contract |
 | `GET /` | The annotation frontend (when built; always in the Compose image) |
@@ -270,8 +275,8 @@ feature is off until a provider is configured; without one, everything else work
 | `SCAT_LLM_PROVIDER` | `anthropic` (Messages API) or `openai` (any OpenAI-compatible Chat Completions server). |
 | `SCAT_LLM_MODEL` | Model name; must match the model pattern of the stage 4 spec (§2.2). |
 | `SCAT_LLM_API_KEY` | Secret. Required for `anthropic`; optional for `openai` (local servers). |
-| `SCAT_LLM_BASE_URL` | Optional. Defaults: `https://api.anthropic.com` and `https://api.openai.com/v1`. Lets `openai` reach Ollama, vLLM, or Azure-style gateways. |
-| `SCAT_LLM_TIMEOUT_SECONDS` | Optional; default 600. Models that reason before answering can take minutes on a long narrative. |
+| `SCAT_LLM_BASE_URL` | Optional. Defaults: `https://api.anthropic.com` and `https://api.openai.com/v1`. Lets `openai` reach Ollama, vLLM, or Azure-style gateways. Must be an `http` or `https` URL with a host (and a valid port); otherwise the feature is off and a warning names the variable. |
+| `SCAT_LLM_TIMEOUT_SECONDS` | Optional; default 600. Models that reason before answering can take minutes on a long narrative. The timeout applies to each read (the wait between bytes), not to the call as a whole. |
 | `SCAT_LLM_MAX_OUTPUT_TOKENS` | Optional; default 32,000. |
 
 Compose passes these through from the host environment or a git-ignored `.env` (see
@@ -306,6 +311,13 @@ curl -s http://localhost:8000/api/v1/llm
 The model must return the narrative unchanged with only tags added; if its output does not
 reproduce the narrative exactly, the run fails rather than guessing, and running it again may
 help.
+
+At most 4 model calls run at once (`LLM_MAX_CONCURRENT_RUNS` in `config.py`); further runs wait
+for a slot. Cancelling a run in the browser stops waiting for it, but does not stop a provider
+call that is already running: it still holds its slot until it finishes or times out.
+
+The `openai` provider sends `max_tokens`. OpenAI reasoning models that require
+`max_completion_tokens` instead are not supported in this revision.
 
 ## Project layout
 
@@ -348,7 +360,8 @@ access log is disabled (`--no-access-log`) because it would record query values.
 unexpected fault or unreachable database logs only its exception type and source location.
 
 Each LLM call also logs one line: provider, model, status, duration, output length, annotation
-count, and reason. It describes the provider call, not the final HTTP response, and nothing else
+count, reason, and the provider's HTTP status when it answered with a non-2xx response
+(`upstream_status`, for example 401 or 429; `-` otherwise). It describes the provider call, not the final HTTP response, and nothing else
 from the call (prompt, narrative, output, URL, key) is logged. The `httpx` and `httpcore` loggers
 are set to WARNING because httpx logs request URLs at INFO.
 
