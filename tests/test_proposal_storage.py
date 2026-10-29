@@ -120,3 +120,4 @@ def test_migration_0004_round_trip(database_url: str) -> None:
         command.check(config)
     finally:
         engine.dispose()
+        command.upgrade(config, "head")  # the session database stays at head for later tests
