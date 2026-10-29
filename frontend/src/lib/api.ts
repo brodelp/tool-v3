@@ -94,6 +94,27 @@ export async function saveUserSet(
   throw await failure(response);
 }
 
+/** Removes one stored LLM set (stage 4 §4.6); the answer has the same shape as a save. */
+export async function removeLlmSet(
+  caseId: string,
+  username: string,
+  setId: string,
+  version: number,
+): Promise<SaveResult> {
+  const url = `${BASE}/${encodeURIComponent(caseId)}/annotation-sets?${query(username)}&set_id=${encodeURIComponent(setId)}`;
+  const response = await fetch(url, {
+    method: "DELETE",
+    cache: "no-store",
+    headers: { "If-Match": `"${version}"` },
+  });
+  if (response.ok) {
+    const body = (await response.json()) as { version: number; updated_at: string };
+    return { kind: "saved", version: body.version, updatedAt: body.updated_at };
+  }
+  if (response.status === 412) return { kind: "conflict" };
+  throw await failure(response);
+}
+
 /** What went wrong and what to do, in the interface's voice. */
 export function describeError(error: unknown): string {
   if (!(error instanceof ApiError)) {
@@ -104,6 +125,8 @@ export function describeError(error: unknown): string {
       return "The case store isn't reachable. Check that the database is running, then try again.";
     case "NOT_FOUND":
       return "This case isn't stored under this username. It may have been deleted.";
+    case "SET_NOT_FOUND":
+      return "That set is no longer stored. Reload the case.";
     case "INVALID_PARAMETERS":
       return "That username isn't valid. Use an ASCII handle or a single email address.";
     default:

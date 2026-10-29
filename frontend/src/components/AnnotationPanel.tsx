@@ -5,6 +5,7 @@ import { inkStyle } from "../lib/colors";
 
 interface AnnotationPanelProps {
   readonly annotations: readonly Annotation[];
+  readonly readOnly: boolean;
   readonly selectedId: string | null;
   /** Issues from the last rejected save, by annotation id; others are listed apart. */
   readonly issuesById: ReadonlyMap<string, readonly Issue[]>;
@@ -16,7 +17,7 @@ const QUOTE_LIMIT = 60;
 
 /** Annotations grouped by label in canonical order, each group in narrative order. */
 export function AnnotationPanel(props: AnnotationPanelProps) {
-  const { annotations, selectedId, issuesById, otherIssues, onChoose } = props;
+  const { annotations, readOnly, selectedId, issuesById, otherIssues, onChoose } = props;
   const groups = LABELS.map((label) => ({
     label,
     items: annotations.filter((a) => a.label === label).sort(byPosition),
@@ -36,7 +37,9 @@ export function AnnotationPanel(props: AnnotationPanelProps) {
       )}
       {groups.length === 0 ? (
         <p className="panel-empty">
-          Select text in the narrative, then choose a label to annotate it.
+          {readOnly
+            ? "This set has no annotations."
+            : "Select text in the narrative, then choose a label to annotate it."}
         </p>
       ) : (
         groups.map((group) => (

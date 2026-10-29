@@ -8,6 +8,7 @@ interface InspectorProps {
   readonly y: number;
   readonly annotations: readonly Annotation[];
   readonly message: string | null;
+  readonly readOnly: boolean;
   readonly onRelabel: (id: string, label: Label) => void;
   readonly onDelete: (id: string) => void;
   readonly onClose: () => void;
@@ -17,7 +18,7 @@ const QUOTE_LIMIT = 80;
 
 /** Every annotation under the clicked point, with relabel and delete. */
 export function Inspector(props: InspectorProps) {
-  const { annotations, message, onRelabel, onDelete, onClose } = props;
+  const { annotations, message, readOnly, onRelabel, onDelete, onClose } = props;
   const title = annotations.length === 1 ? "Annotation" : `${annotations.length} annotations here`;
   return (
     <Popover x={props.x} y={props.y} label={title} onClose={onClose}>
@@ -42,6 +43,7 @@ export function Inspector(props: InspectorProps) {
                   {a.start}–{a.end}
                 </span>
               </div>
+              {!readOnly && (
               <div className="inspector-actions">
                 <select
                   aria-label={`Label of annotation ${i + 1}`}
@@ -68,6 +70,7 @@ export function Inspector(props: InspectorProps) {
                   Delete
                 </button>
               </div>
+              )}
             </li>
           );
         })}

@@ -11,7 +11,7 @@ const pagesOf =
   (n: number): MeasurerFactory =>
   () => ({ fits: (s, e) => e - s <= n, dispose: () => undefined });
 
-function exportBody(narrative: string, annotations = "{}", version = 1): string {
+function exportBody(narrative: string, annotations = "{}", version = 1, extraSets = ""): string {
   return JSON.stringify({
     case_id: "5001-1",
     username: "demo_annotator",
@@ -20,14 +20,14 @@ function exportBody(narrative: string, annotations = "{}", version = 1): string 
     version,
     offset_unit: "unicode-code-point",
     record: { case_id: "5001-1", username: "demo_annotator", narrative, __map__: 0 },
-  }).replace('"__map__":0', `"annotation_sets":{"user":{"kind":"user","annotations":${annotations}}}`);
+  }).replace('"__map__":0', `"annotation_sets":{"user":{"kind":"user","annotations":${annotations}}${extraSets}}`);
 }
 
-function setup(narrative: string, annotations = "{}", measurer = pagesOf(10_000)) {
+function setup(narrative: string, annotations = "{}", measurer = pagesOf(10_000), extraSets = "") {
   const onReload = vi.fn();
   const view = render(
     <Annotator
-      submission={parseExport(exportBody(narrative, annotations))}
+      submission={parseExport(exportBody(narrative, annotations, 1, extraSets))}
       onBack={vi.fn()}
       onReload={onReload}
       measurer={measurer}
@@ -335,5 +335,71 @@ describe("saving (F11)", () => {
       await Promise.resolve();
     });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe("annotation set tabs (stage 4 §6)", () => {
+  const llm =
+    ',"llm-1":{"kind":"llm","provider":"anthropic","model":"claude-x",' +
+    '"generated_at":"2026-10-28T10:00:00Z","annotations":{"AE":[{"text":"nausea","start":15,"end":21}]}}';
+  const mine = '{"SDrug":[{"text":"Aspirin","start":0,"end":7}]}';
+
+  it("switching to an llm set shows its annotations read-only", async () => {
+    const { text } = setup("Aspirin caused nausea.", mine, pagesOf(10_000), llm);
+    await userEvent.click(screen.getByRole("tab", { name: /claude-x/ }));
+    expect([...text.querySelectorAll(".mark")].map((m) => m.textContent)).toEqual(["nausea"]);
+    expect(screen.getByText("LLM annotations are read-only.")).toBeInTheDocument();
+    select(text, 16, 18);
+    mouseUp(text);
+    expect(screen.queryByRole("dialog", { name: "Choose a label" })).toBeNull();
+    select(text, 17, 17);
+    mouseUp(text);
+    const inspector = screen.getByRole("dialog", { name: "Annotation" });
+    expect(within(inspector).queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(within(inspector).queryByRole("combobox")).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove set" })).toBeInTheDocument();
+  });
+
+  it("switching back keeps unsaved user edits", async () => {
+    const { text } = setup("Aspirin caused nausea.", mine, pagesOf(10_000), llm);
+    select(text, 8, 14);
+    mouseUp(text);
+    chooseLabel("AE");
+    expect(screen.getByLabelText("unsaved changes")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /claude-x/ }));
+    await userEvent.click(screen.getByRole("tab", { name: /My annotations/ }));
+    expect([...text.querySelectorAll(".mark")].map((m) => m.textContent)).toEqual(["Aspirin", "caused"]);
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved changes");
+  });
+
+  it("remove set sends DELETE with If-Match and adopts the new version", async () => {
+    setup("Aspirin caused nausea.", mine, pagesOf(10_000), llm);
+    await userEvent.click(screen.getByRole("tab", { name: /claude-x/ }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = stubFetch(
+      json(200, { version: 2, updated_at: "2026-10-29T09:00:00.000001Z" }, { ETag: '"2"' }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Remove set" }));
+    expect(confirm).toHaveBeenCalledWith("Remove the annotations from claude-x? This creates a new version.");
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe(
+      "/api/v1/submissions/5001-1/annotation-sets?username=demo_annotator&set_id=llm-1",
+    );
+    expect(init?.method).toBe("DELETE");
+    expect(init?.headers).toMatchObject({ "If-Match": '"1"' });
+    expect(await screen.findByText("Version 2")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /claude-x/ })).toBeNull();
+    expect(screen.getByRole("tab", { name: /My annotations/ })).toHaveAttribute("aria-selected", "true");
+    confirm.mockRestore();
+  });
+
+  it("does nothing when removal is not confirmed", async () => {
+    setup("Aspirin caused nausea.", mine, pagesOf(10_000), llm);
+    await userEvent.click(screen.getByRole("tab", { name: /claude-x/ }));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetchMock = stubFetch();
+    await userEvent.click(screen.getByRole("button", { name: "Remove set" }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 });

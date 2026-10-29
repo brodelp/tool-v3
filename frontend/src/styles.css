@@ -602,3 +602,64 @@ select {
     margin-left: 0;
   }
 }
+
+/* ------------------------------------------------------------ annotation set tabs */
+
+.source-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.4rem 1rem 0;
+  border-bottom: 1px solid var(--edge);
+  overflow-x: auto;
+}
+
+.source-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.source-tab[aria-selected="true"] {
+  background: var(--paper);
+  border-color: var(--edge);
+  color: var(--ink);
+}
+
+.llm-badge {
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  background: var(--pen-wash);
+  color: var(--pen);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.dirty-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--pen);
+}
+
+.set-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.4rem 1rem;
+  color: var(--ink-muted);
+  font-size: 0.9rem;
+}
+
+.set-bar .quiet {
+  margin-left: auto;
+}

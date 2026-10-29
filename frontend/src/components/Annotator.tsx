@@ -11,15 +11,16 @@ import {
   type Annotation,
   type SerializedMap,
 } from "../lib/annotations";
-import { describeError, saveUserSet, type Issue } from "../lib/api";
+import { describeError, removeLlmSet, saveUserSet, type Issue } from "../lib/api";
 import { pageOf } from "../lib/paginate";
-import type { LoadedSubmission } from "../lib/record";
+import type { LlmSet, LoadedSubmission } from "../lib/record";
 import { coveringAt, segment, type Range } from "../lib/segments";
 import { clearSelection, readSelection } from "../lib/selection";
 import { AnnotationPanel } from "./AnnotationPanel";
 import { segmentStyle } from "./highlight";
 import { Inspector } from "./Inspector";
 import { LabelPicker } from "./LabelPicker";
+import { SourceTabs, setTitle, type SourceId } from "./SourceTabs";
 
 interface AnnotatorProps {
   readonly submission: LoadedSubmission;
@@ -80,7 +81,17 @@ const TIME = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-di
 export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorProps) {
   const { narrative, caseId, username } = submission;
   const text = narrative.text;
-  const [annotations, setAnnotations] = useState<readonly Annotation[]>(submission.userAnnotations);
+  const [userAnnotations, setAnnotations] = useState<readonly Annotation[]>(submission.userAnnotations);
+  const [llmSets, setLlmSets] = useState<readonly LlmSet[]>(submission.llmSets);
+  const [active, setActive] = useState<SourceId>("user");
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const readOnly = active !== "user";
+  // Tabs only change what is shown; `userAnnotations` keeps unsaved edits meanwhile.
+  const activeSet = readOnly ? llmSets.find((set) => set.id === active) : undefined;
+  const annotations = useMemo(
+    () => (readOnly ? (activeSet?.annotations ?? []) : userAnnotations),
+    [readOnly, activeSet, userAnnotations],
+  );
   const [version, setVersion] = useState(submission.version);
   const [savedText, setSavedText] = useState(() => serializeMap(submission.userAnnotations).text);
   const [pending, setPending] = useState<Range | null>(null);
@@ -98,7 +109,7 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
   const pageEnd = narrative.toCodePoint(starts[page + 1] ?? text.length);
   const pageCount = starts.length;
 
-  const serialized = useMemo(() => serializeMap(annotations), [annotations]);
+  const serialized = useMemo(() => serializeMap(userAnnotations), [userAnnotations]);
   const dirty = serialized.text !== savedText;
   const lanes = useMemo(() => assignLanes(annotations), [annotations]);
   const segments = useMemo(
@@ -185,7 +196,7 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
     const b = narrative.toCodePoint(base + selection.end);
     const at = { x: event.clientX, y: event.clientY };
     if (selection.collapsed) {
-      if (event.shiftKey && pending !== null) {
+      if (!readOnly && event.shiftKey && pending !== null) {
         const extended = { start: Math.min(pending.start, a), end: Math.max(pending.end, a) };
         setPending(extended);
         setPopup({ kind: "pick", ...at, message: null });
@@ -205,6 +216,7 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
       }
       return;
     }
+    if (readOnly) return; // LLM sets cannot be annotated
     let range: Range = { start: Math.min(a, b), end: Math.max(a, b) };
     if (event.shiftKey && pending !== null) {
       range = { start: Math.min(range.start, pending.start), end: Math.max(range.end, pending.end) };
@@ -216,14 +228,14 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
 
   const pick = (label: Label) => {
     if (pending === null) return;
-    if (isDuplicate(annotations, label, pending.start, pending.end)) {
+    if (isDuplicate(userAnnotations, label, pending.start, pending.end)) {
       setPopup((p) =>
         p?.kind === "pick" ? { ...p, message: `This text already has the ${label} label.` } : p,
       );
       return;
     }
     const created = newAnnotation(narrative, label, pending.start, pending.end);
-    setAnnotations([...annotations, created]);
+    setAnnotations([...userAnnotations, created]);
     setSelectedId(created.id);
     setPending(null);
     setPopup(null);
@@ -231,20 +243,20 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
   };
 
   const relabel = (id: string, label: Label) => {
-    const target = annotations.find((a) => a.id === id);
+    const target = userAnnotations.find((a) => a.id === id);
     if (target === undefined) return;
-    if (isDuplicate(annotations, label, target.start, target.end, id)) {
+    if (isDuplicate(userAnnotations, label, target.start, target.end, id)) {
       setPopup((p) =>
         p?.kind === "inspect" ? { ...p, message: `This text already has the ${label} label.` } : p,
       );
       return;
     }
-    setAnnotations(annotations.map((a) => (a.id === id ? { ...a, label } : a)));
+    setAnnotations(userAnnotations.map((a) => (a.id === id ? { ...a, label } : a)));
     setPopup((p) => (p?.kind === "inspect" ? { ...p, message: null } : p));
   };
 
   const remove = (id: string) => {
-    setAnnotations(annotations.filter((a) => a.id !== id));
+    setAnnotations(userAnnotations.filter((a) => a.id !== id));
     if (selectedId === id) setSelectedId(null);
     setPopup((p) => {
       if (p?.kind !== "inspect") return p;
@@ -258,6 +270,31 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
     setSelectedId(annotation.id);
     setPending(null);
     setPopup(null);
+  };
+
+  const select = (id: SourceId) => {
+    setActive(id);
+    setPending(null);
+    setPopup(null);
+    setSelectedId(null);
+    clearSelection();
+  };
+
+  const removeSet = async (set: LlmSet) => {
+    if (!window.confirm(`Remove the annotations from ${set.model}? This creates a new version.`)) return;
+    setRemoveError(null);
+    try {
+      const result = await removeLlmSet(caseId, username, set.id, version);
+      if (result.kind === "saved") {
+        setVersion(result.version);
+        setLlmSets((sets) => sets.filter((s) => s.id !== set.id));
+        select("user");
+      } else {
+        setSaveState({ kind: "conflict" });
+      }
+    } catch (error) {
+      setRemoveError(describeError(error));
+    }
   };
 
   const back = () => {
@@ -314,12 +351,28 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
           <p>Not saved. {saveState.message}</p>
         </div>
       )}
+      {removeError !== null && (
+        <div className="banner" role="alert">
+          <p>Not removed. {removeError}</p>
+        </div>
+      )}
       {saveState.kind === "invalid" && (
         <div className="banner" role="alert">
           <p>
             Not saved: the service found {saveState.count}{" "}
             {saveState.count === 1 ? "problem" : "problems"}. Each is listed with its annotation.
           </p>
+        </div>
+      )}
+
+      <SourceTabs sets={llmSets} proposal={null} active={active} userDirty={dirty} onSelect={select} />
+      {activeSet !== undefined && (
+        <div className="set-bar">
+          <span className="set-info">{setTitle(activeSet)}</span>
+          <span className="set-note">LLM annotations are read-only.</span>
+          <button type="button" className="quiet danger" onClick={() => void removeSet(activeSet)}>
+            Remove set
+          </button>
         </div>
       )}
 
@@ -395,6 +448,7 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
 
         <AnnotationPanel
           annotations={annotations}
+          readOnly={readOnly}
           selectedId={selectedId}
           issuesById={issues.byId}
           otherIssues={issues.other}
@@ -419,6 +473,7 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
           y={popup.y}
           annotations={inspected}
           message={popup.message}
+          readOnly={readOnly}
           onRelabel={relabel}
           onDelete={remove}
           onClose={() => {
