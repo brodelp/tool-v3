@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
+import httpx
+
 from ..config import LLM_MAX_OUTPUT_TOKENS, LLM_TIMEOUT_SECONDS, MODEL_PATTERN
 
 type Provider = Literal["anthropic", "openai"]
@@ -34,6 +36,16 @@ class LlmSettings:
 
 def _disabled(name: str) -> None:
     _logger.warning("LLM annotation disabled: %s is missing or invalid", name)
+
+
+def _usable_base_url(raw: str) -> bool:
+    """An http(s) URL with a host and a port in range (httpx accepts any port number)."""
+    try:
+        url = httpx.URL(raw)
+    except httpx.InvalidURL, TypeError, ValueError:
+        return False
+    port = url.port
+    return url.scheme in ("http", "https") and bool(url.host) and (port is None or 0 < port < 65536)
 
 
 def _positive_float(raw: str) -> float | None:
@@ -73,6 +85,9 @@ def load_llm_settings(environ: Mapping[str, str]) -> LlmSettings | None:
         _disabled("SCAT_LLM_API_KEY")
         return None
     base_url = (get("SCAT_LLM_BASE_URL") or _DEFAULT_BASE_URLS[provider]).removesuffix("/")
+    if not _usable_base_url(base_url):
+        _disabled("SCAT_LLM_BASE_URL")
+        return None
     timeout: float | None = float(LLM_TIMEOUT_SECONDS)
     raw_timeout = get("SCAT_LLM_TIMEOUT_SECONDS")
     if raw_timeout is not None:

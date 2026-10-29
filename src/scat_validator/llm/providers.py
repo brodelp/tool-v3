@@ -97,7 +97,7 @@ def complete(settings: LlmSettings, prompt: str, client: httpx.Client) -> Comple
         response = client.post(url, headers=headers, json=body, timeout=timeout)
     except httpx.TimeoutException:
         raise ProviderTimeout() from None
-    except httpx.HTTPError:
+    except httpx.HTTPError, httpx.InvalidURL:
         raise ProviderUnavailable() from None
     if not response.is_success:
         raise ProviderUnavailable(response.status_code) from None

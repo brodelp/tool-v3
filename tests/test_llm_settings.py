@@ -108,3 +108,29 @@ def test_prompt_renders_once() -> None:
     rendered = render_prompt("see {text} here")
     assert rendered.count("see {text} here") == 1
     assert rendered.count(PLACEHOLDER) == 1
+
+
+@pytest.mark.parametrize(
+    "value", ["ftp://x", "http://", "http://host:99999", "http://ho\x01st/v1", "host:11434/v1"]
+)
+def test_invalid_base_url_disables(value: str, caplog: pytest.LogCaptureFixture) -> None:
+    env = {"SCAT_LLM_PROVIDER": "openai", "SCAT_LLM_MODEL": "m", "SCAT_LLM_BASE_URL": value}
+    with caplog.at_level(logging.WARNING):
+        assert load_llm_settings(env) is None
+    (record,) = caplog.records
+    assert "SCAT_LLM_BASE_URL" in record.getMessage()
+    assert value not in caplog.text
+    assert "99999" not in caplog.text
+
+
+def test_host_docker_internal_base_url_is_enabled(caplog: pytest.LogCaptureFixture) -> None:
+    env = {
+        "SCAT_LLM_PROVIDER": "openai",
+        "SCAT_LLM_MODEL": "llama3:8b",
+        "SCAT_LLM_BASE_URL": "http://host.docker.internal:11434/v1",
+    }
+    with caplog.at_level(logging.WARNING):
+        s = load_llm_settings(env)
+    assert s is not None
+    assert s.base_url == "http://host.docker.internal:11434/v1"
+    assert caplog.records == []

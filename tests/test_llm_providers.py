@@ -180,3 +180,11 @@ def test_unusable_success_has_no_upstream_status() -> None:
     with pytest.raises(ProviderUnavailable) as raised:
         complete(settings(), "PROMPT", client)
     assert raised.value.upstream_status is None
+
+
+def test_invalid_url_is_unavailable() -> None:
+    client = client_for(lambda request: anthropic_ok([]))  # pragma: no cover - never called
+    with pytest.raises(ProviderUnavailable) as raised:
+        complete(settings(base="http://ho\x01st"), "PROMPT", client)
+    assert raised.value.upstream_status is None
+    assert raised.value.args == ()
