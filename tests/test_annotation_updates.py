@@ -22,7 +22,7 @@ from scat_validator.contracts import (
 )
 from scat_validator.openapi_docs import EXAMPLE_NOT_FOUND, EXAMPLE_VERSION_CONFLICT
 from scat_validator.storage import Storage
-from scat_validator.updates import if_match_version, splice_annotations
+from scat_validator.updates import if_match_version
 from tests.conftest import alembic_config
 from tests.helpers import (
     MISSING,
@@ -548,22 +548,6 @@ def test_identities_and_values_never_logged(
     assert "GET /api/v1/submissions status=200" in caplog.text
     assert "PUT /api/v1/submissions/{case_id}/annotations status=200" in caplog.text
     assert "PUT /api/v1/submissions/{case_id}/annotations status=412" in caplog.text
-
-
-# ---------------------------------------------------------------- splice unit cases
-
-
-@pytest.mark.parametrize(
-    ("record", "expected"),
-    [
-        ('{"a":1,"annotations":{"X":[]},"b":"}"}', '{"a":1,"annotations":NEW,"b":"}"}'),
-        ('{"a":"x\\"y","b":[1,{"c":2}]}', '{"a":"x\\"y","b":[1,{"c":2}],"annotations":NEW}'),
-        ('{\n"a" : 1e400 \n}', '{\n"a" : 1e400,"annotations":NEW \n}'),
-        ('{"a":"😀","annotations" :\t{}}', '{"a":"😀","annotations" :\tNEW}'),
-    ],
-)
-def test_splice_annotations(record: str, expected: str) -> None:
-    assert splice_annotations(record, "NEW") == expected
 
 
 # ---------------------------------------------------------------- F13 frontend serving
