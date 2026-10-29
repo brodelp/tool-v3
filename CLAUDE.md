@@ -41,8 +41,9 @@
   frontend's labels are generated from it (`make labels`); a test fails when they drift.
 - The specs are `docs/scat-validation-endpoint-spec.md` (stage 1, validation),
   `docs/scat-stage-2-submission-spec.md` (stage 2, storage/export/delete, which extends stage 1),
-  and `docs/scat-stage-3-annotation-frontend-spec.md` (stage 3, frontend, listing, annotation
-  updates).
+  `docs/scat-stage-3-annotation-frontend-spec.md` (stage 3, frontend, listing, annotation
+  updates), and `docs/scat-stage-4-llm-annotation-spec.md` (stage 4, annotation sets by source,
+  LLM annotation; it replaces the record's `annotations` with `annotation_sets`).
   Choices they leave open are recorded in `docs/implementation-decisions.md`, and acceptance
   criteria map to tests in `docs/acceptance-mapping.md`. Update those when behavior changes.
 - Never log `case_id` or `username` values, SQL parameters, or database exception messages; the
