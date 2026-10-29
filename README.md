@@ -259,6 +259,54 @@ Pages follow the size of the reading area, so resizing the window or zooming mov
 breaks; offsets never change. jsdom tests cannot measure real layout, so after changing page
 styles, check pagination, stripes, and the popups in a browser.
 
+## LLM annotation
+
+The frontend can ask a language model to propose annotations for a case. A proposal is stored
+by the server, shown read-only, and becomes an `llm` annotation set only when you accept it. The
+feature is off until a provider is configured; without one, everything else works as before.
+
+| Variable | Meaning |
+| --- | --- |
+| `SCAT_LLM_PROVIDER` | `anthropic` (Messages API) or `openai` (any OpenAI-compatible Chat Completions server). |
+| `SCAT_LLM_MODEL` | Model name; must match the model pattern of the stage 4 spec (§2.2). |
+| `SCAT_LLM_API_KEY` | Secret. Required for `anthropic`; optional for `openai` (local servers). |
+| `SCAT_LLM_BASE_URL` | Optional. Defaults: `https://api.anthropic.com` and `https://api.openai.com/v1`. Lets `openai` reach Ollama, vLLM, or Azure-style gateways. |
+| `SCAT_LLM_TIMEOUT_SECONDS` | Optional; default 600. Models that reason before answering can take minutes on a long narrative. |
+| `SCAT_LLM_MAX_OUTPUT_TOKENS` | Optional; default 32,000. |
+
+Compose passes these through from the host environment or a git-ignored `.env` (see
+`.env.example`); an empty value counts as unset. In the dev container, export them before
+`make run`.
+
+**Data egress.** With a cloud provider, case narratives leave this service and are sent to that
+provider. Use a local server (below) when they must not.
+
+Anthropic:
+
+```
+SCAT_LLM_PROVIDER=anthropic
+SCAT_LLM_MODEL=claude-sonnet-4-5
+SCAT_LLM_API_KEY=<your key>
+```
+
+Ollama on the Windows host, reached from the container (no key):
+
+```
+SCAT_LLM_PROVIDER=openai
+SCAT_LLM_BASE_URL=http://host.docker.internal:11434/v1
+SCAT_LLM_MODEL=llama3.1:8b
+```
+
+Verify the configuration (secrets are never shown):
+
+```bash
+curl -s http://localhost:8000/api/v1/llm
+```
+
+The model must return the narrative unchanged with only tags added; if its output does not
+reproduce the narrative exactly, the run fails rather than guessing, and running it again may
+help.
+
 ## Project layout
 
 | Path | Responsibility |
@@ -298,6 +346,11 @@ The app logs one line per request to its API routes: method, route template (for
 access log is disabled (`--no-access-log`) because it would record query values. Bodies, values
 (including `case_id` and `username`), SQL parameters, and exception messages are never logged. An
 unexpected fault or unreachable database logs only its exception type and source location.
+
+Each LLM call also logs one line: provider, model, status, duration, output length, annotation
+count, and reason. It describes the provider call, not the final HTTP response, and nothing else
+from the call (prompt, narrative, output, URL, key) is logged. The `httpx` and `httpcore` loggers
+are set to WARNING because httpx logs request URLs at INFO.
 
 ## Troubleshooting
 

@@ -13,6 +13,13 @@ services:
     # Read by the stage 2 submission routes and by the migrations the image runs before serving.
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-scat}:${POSTGRES_PASSWORD:-scat}@db:5432/${POSTGRES_DB:-scat}
+      # Stage 4 LLM annotation; unset or empty leaves it disabled (see README.md, LLM annotation).
+      SCAT_LLM_PROVIDER: ${SCAT_LLM_PROVIDER:-}
+      SCAT_LLM_MODEL: ${SCAT_LLM_MODEL:-}
+      SCAT_LLM_API_KEY: ${SCAT_LLM_API_KEY:-}
+      SCAT_LLM_BASE_URL: ${SCAT_LLM_BASE_URL:-}
+      SCAT_LLM_TIMEOUT_SECONDS: ${SCAT_LLM_TIMEOUT_SECONDS:-}
+      SCAT_LLM_MAX_OUTPUT_TOKENS: ${SCAT_LLM_MAX_OUTPUT_TOKENS:-}
     depends_on:
       db:
         condition: service_healthy

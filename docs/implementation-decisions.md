@@ -286,3 +286,46 @@ pages. The rest:
   `@fontsource-variable/atkinson-hyperlegible-next` for the interface, chosen because it keeps
   look-alike characters apart in label keys such as `AE`/`mAE`), since the CSP allows only
   same-origin resources.
+
+## Stage 4 annotation sets and LLM annotation
+
+Choices the stage 4 spec and design leave open:
+
+- **Splice helpers** live in `splice.py` (object members with name spans; replace, append, and
+  remove a member). Migration 0003 imports `scat_validator.splice` (pure and stable) rather than
+  copying it. Its downgrade is lossy: it drops LLM sets.
+- **Per-set validation order:** record fields, then sets in code-point id order, then each set's
+  fields (kind, annotations, provider, model, generated_at), then labels. Inventory: record
+  foreign names, then per set its foreign names, then its annotations'. `SUPERSEDED_FIELD` is
+  reported in `field_values` after `offset_unit`, is not inventoried, and is still covered by
+  `json_values`.
+- **LLM detection.** A set is `llm` when its kind is "llm", or when the kind is unusable and the
+  id starts with `llm:`. Kind/id agreement is checked only for a valid id.
+- **Observation.** A set's `kind` is reported only when it is "user" or "llm" (otherwise null). An
+  invalid set id or more than 16 sets nulls `annotation_count` and `annotation_sets`, so unbounded
+  ids never enter the report.
+- **`generated_at`** requires RFC 3339 UTC with `Z`, 0-6 fractional digits, and a real calendar
+  date via `strptime`: year 0000 and leap second :60 are rejected.
+- **OpenAPI `AnnotationSet`** leaves `provider`, `model`, and `generated_at` untyped (they are
+  foreign metadata on a user set); the llm-only rules are in descriptions and enforced at runtime.
+  The schema stays looser than the runtime (for example it does not reject a top-level
+  `annotations`).
+- **Proposal custody.** The server stores proposals (`llm_proposals`, uuid id, expiry from DB
+  time, TTL 3600 s, lazy purge on insert). Accept updates the record and deletes the proposal in
+  one transaction guarded by version; a proposal discarded or expired between lookup and store
+  makes accept answer 412.
+- **Provider calls** use raw httpx, no SDK; Anthropic API version 2026-10-21 and no sampling
+  parameters. The httpx/httpcore loggers are set to WARNING because httpx logs request URLs (which
+  may carry credentials) at INFO.
+- **Bodyless routes** reject any body with 413 after reading at most one byte;
+  `GET /api/v1/llm` ignores query parameters.
+- **`set_id` is a query parameter** (models may contain `/`). Removal answers 404 `SET_NOT_FOUND`
+  before the 412 version check. Size-limit issues on bodyless accept/remove use location "body"
+  and path `/annotation_sets` (record-relative).
+- **Parser errors.** The parser reports the first error in stream order (spec §5.3, "scanned once,
+  in order").
+- **Frontend.** User edits live in their own state; LLM sets and proposals are read-only and never
+  sent. The window keydown handler ignores events already handled (`defaultPrevented`), so tab
+  arrow keys don't page.
+- **OpenAPI examples.** FastAPI drops `null` from examples, so `custom_openapi` copies response
+  examples back from each route's `openapi_extra`.
