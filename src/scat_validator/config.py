@@ -80,6 +80,34 @@ MAX_ANNOTATION_SETS: Final = 16
 PROVIDER_PATTERN: Final = r"^[a-z][a-z0-9-]{0,31}$"
 MODEL_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$"
 
+# LLM annotation (stage 4 spec §5).
+MAX_LLM_NARRATIVE_CODE_POINTS: Final = 50_000
+LLM_TIMEOUT_SECONDS: Final = 600
+LLM_MAX_OUTPUT_TOKENS: Final = 32_000
+LLM_PROPOSAL_TTL_SECONDS: Final = 3600
+ANTHROPIC_API_VERSION: Final = "2026-10-21"
+# Markup tag in the model output -> label (spec §5.3).
+LLM_TAGS: Final[dict[str, str]] = {
+    "SDRUG": "SDrug",
+    "CDRUG": "CDrug",
+    "ODRUG": "ODrug",
+    "DOSE": "Dose",
+    "IND": "IND",
+    "TREATMENT": "Treatment",
+    "AE": "AE",
+    "MAE": "mAE",
+    "DX": "Dx",
+    "LAB": "Lab",
+    "STATUS": "Status",
+    "RO": "RO",
+    "COD": "CoD",
+    "MHX": "MHx",
+    "FHX": "FHx",
+    "AGE": "Age",
+    "SEX": "Sex",
+}
+assert set(LLM_TAGS.values()) <= set(LABELS)
+
 # Per-record checks in reporting order (spec §6.4).
 CHECKS: Final = (
     "json_values",
