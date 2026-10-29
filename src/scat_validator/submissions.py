@@ -39,7 +39,7 @@ from scat_validator.wire import contains_forbidden_code_point
 
 SUBMISSIONS_ROUTE: Final = "/api/v1/submissions"
 SUBMISSION_ROUTE: Final = SUBMISSIONS_ROUTE + "/{case_id}"
-ANNOTATIONS_ROUTE: Final = SUBMISSION_ROUTE + "/annotations"
+USER_SET_ROUTE: Final = SUBMISSION_ROUTE + "/annotation-sets/user"
 USERNAME_PARAMETER: Final = "username"
 
 

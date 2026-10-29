@@ -66,20 +66,21 @@ describe("serializeMap (F11)", () => {
     const body =
       '{"case_id":"5001-1","username":"demo_annotator","submitted_at":"t","updated_at":"t",' +
       '"version":3,"offset_unit":"unicode-code-point","record":{"case_id":"5001-1",' +
-      '"narrative":"Aspirin caused nausea.","annotations":{"AE":[' +
+      '"narrative":"Aspirin caused nausea.","annotation_sets":{"user":{"kind":"user",' +
+      '"annotations":{"AE":[' +
       ae +
       '],"SDrug":[\n  ' +
       sdrug +
-      "\n]},\"x\":1.2300}}";
+      "\n]}}},\"x\":1.2300}}";
     const loaded = parseExport(body);
     expect(loaded.version).toBe(3);
     expect(loaded.narrative.text).toBe("Aspirin caused nausea.");
-    expect(loaded.annotations.map((a) => [a.label, a.text])).toEqual([
+    expect(loaded.userAnnotations.map((a) => [a.label, a.text])).toEqual([
       ["AE", "nausea"],
       ["SDrug", "Aspirin"],
     ]);
     const extra = newAnnotation(loaded.narrative, "AE", 8, 14);
-    const { text } = serializeMap([extra, ...loaded.annotations]);
+    const { text } = serializeMap([extra, ...loaded.userAnnotations]);
     expect(text).toBe(
       `{"SDrug":[${sdrug}],"AE":[${ae},{"text":"caused","start":8,"end":14}]}`,
     );
@@ -87,9 +88,9 @@ describe("serializeMap (F11)", () => {
 
   it("keeps a relabelled loaded annotation's source", () => {
     const body =
-      '{"version":1,"record":{"narrative":"Aspirin","annotations":' +
-      '{"SDrug":[{"text":"Aspirin","start":0,"end":7,"id":"x"}]}}}';
-    const [first] = parseExport(body).annotations;
+      '{"version":1,"record":{"narrative":"Aspirin","annotation_sets":' +
+      '{"user":{"kind":"user","annotations":{"SDrug":[{"text":"Aspirin","start":0,"end":7,"id":"x"}]}}}}}';
+    const [first] = parseExport(body).userAnnotations;
     if (first === undefined) throw new Error("missing annotation");
     const relabelled: Annotation = { ...first, label: "CDrug" };
     expect(serializeMap([relabelled]).text).toBe(
@@ -99,7 +100,7 @@ describe("serializeMap (F11)", () => {
 
   it("reads a record without annotations", () => {
     const body = '{"version":1,"record":{"narrative":"n","annotations_note":{"a":[]}}}';
-    expect(parseExport(body).annotations).toEqual([]);
+    expect(parseExport(body).userAnnotations).toEqual([]);
   });
 });
 

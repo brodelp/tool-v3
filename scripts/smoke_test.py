@@ -108,7 +108,7 @@ def main() -> None:
         "invalid batch -> 422 with one TEXT_MISMATCH",
         status == 422
         and report["issue_count"] == 1
-        and report["issues"][0]["path"] == "/records/1/annotations/AE/0/text"
+        and report["issues"][0]["path"] == "/records/1/annotation_sets/user/annotations/AE/0/text"
         and (report["record_count"], report["valid_record_count"]) == (2, 1),
     )
 
@@ -145,7 +145,7 @@ def main() -> None:
         "/api/v1/validate-batch",
         "/api/v1/submissions",
         "/api/v1/submissions/{case_id}",
-        "/api/v1/submissions/{case_id}/annotations",
+        "/api/v1/submissions/{case_id}/annotation-sets/user",
     }
     check(
         "GET /openapi.json documents every endpoint",
@@ -167,7 +167,8 @@ def submissions(server: Server) -> None:
     username = "smoke+test@example.com"
     record = (
         b'{"case_id": "%s", "username": "%s", "narrative": "Aspirin caused nausea.",'
-        b' "dose_mg": 1.2300, "annotations": {"AE": [{"text": "nausea", "start": 15, "end": 21}]}}'
+        b' "dose_mg": 1.2300, "annotation_sets": {"user": {"kind": "user", "annotations":'
+        b' {"AE": [{"text": "nausea", "start": 15, "end": 21}]}}}}'
     ) % (case_id.encode(), username.encode())
     lookup = f"/api/v1/submissions/{case_id}?username={quote(username, safe='')}"
 
@@ -197,7 +198,9 @@ def submissions(server: Server) -> None:
     )
     check("list -> 200 including the submission", case_id in listed)
 
-    update_path = f"/api/v1/submissions/{case_id}/annotations?username={quote(username, safe='')}"
+    update_path = (
+        f"/api/v1/submissions/{case_id}/annotation-sets/user?username={quote(username, safe='')}"
+    )
     new_map = b'{"SDrug":[{"text":"Aspirin","start":0,"end":7,"weight":1.0E2}]}'
     update = b'{"annotations":' + new_map + b"}"
     status, headers, _ = server.request("PUT", update_path, update, JSON | {"If-Match": '"1"'})
@@ -212,8 +215,12 @@ def submissions(server: Server) -> None:
     )
     status, _, body = server.request("GET", lookup)
     check(
-        "export after update -> only the annotations replaced, byte for byte",
-        status == 200 and b'"dose_mg": 1.2300, "annotations": ' + new_map + b"}}" in body,
+        "export after update -> only the user map replaced, byte for byte",
+        status == 200
+        and b'"dose_mg": 1.2300, "annotation_sets": {"user": {"kind": "user", "annotations": '
+        + new_map
+        + b"}}}}"
+        in body,
     )
 
     status, _, body = server.request("DELETE", lookup)

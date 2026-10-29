@@ -71,12 +71,13 @@ EXAMPLE_RECORD: Final[dict[str, Any]] = {
     "username": "demo_annotator",
     "narrative": "Aspirin caused nausea.",
 }
+EXAMPLE_ANNOTATION_MAP: Final[dict[str, Any]] = {
+    "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
+    "AE": [{"text": "nausea", "start": 15, "end": 21}],
+}
 EXAMPLE_ANNOTATED_RECORD: Final[dict[str, Any]] = {
     **EXAMPLE_RECORD,
-    "annotations": {
-        "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
-        "AE": [{"text": "nausea", "start": 15, "end": 21}],
-    },
+    "annotation_sets": {"user": {"kind": "user", "annotations": EXAMPLE_ANNOTATION_MAP}},
 }
 
 _ALL_PASSED: Final = dict.fromkeys(CHECKS, "passed")
@@ -99,7 +100,17 @@ def _observation(
         "narrative_code_points": 22,
         "offset_unit": "unicode-code-point",
         "annotation_count": 2 if annotated else 0,
-        "annotations_by_label": {"SDrug": 1, "AE": 1} if annotated else {},
+        "annotation_sets": (
+            {
+                "user": {
+                    "kind": "user",
+                    "annotation_count": 2,
+                    "annotations_by_label": {"SDrug": 1, "AE": 1},
+                }
+            }
+            if annotated
+            else {}
+        ),
         "checks": checks,
     }
 
@@ -143,9 +154,14 @@ EXAMPLE_INVALID_BATCH: Final[dict[str, Any]] = {
         {
             **EXAMPLE_RECORD,
             "case_id": "12345679-1",
-            "annotations": {
-                "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
-                "AE": [{"text": "Nausea", "start": 15, "end": 21}],
+            "annotation_sets": {
+                "user": {
+                    "kind": "user",
+                    "annotations": {
+                        "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
+                        "AE": [{"text": "Nausea", "start": 15, "end": 21}],
+                    },
+                }
             },
         },
     ]
@@ -159,7 +175,7 @@ EXAMPLE_INVALID_BATCH_REPORT: Final = _report(
     [
         {
             "location": "body",
-            "path": "/records/1/annotations/AE/0/text",
+            "path": "/records/1/annotation_sets/user/annotations/AE/0/text",
             "code": "TEXT_MISMATCH",
             "message": (
                 "Text must exactly match the narrative at the supplied Unicode code-point offsets."
@@ -226,8 +242,10 @@ _NO_STORE_HEADER: Final = {
 
 _LIMITS_DESCRIPTION: Final = f"""
 **Minimal record:** `case_id`, `username`, and `narrative`. A narrative without annotations is
-the default submission. `annotations` (pre-existing spans) and `offset_unit` are optional; offsets
-are always Unicode code points, and each record observation reports the `offset_unit` used.
+the default submission. `annotation_sets` (pre-existing spans, kept in sets by source: `user` and
+`llm:<provider>:<model>`, at most 16) and `offset_unit` are optional; offsets are always Unicode
+code points, and each record observation reports the `offset_unit` used. A top-level
+`annotations` member is rejected (`SUPERSEDED_FIELD`); use `annotation_sets.user.annotations`.
 
 **Wire rules enforced at runtime** (JSON Schema cannot express all of them):
 
@@ -243,8 +261,10 @@ are always Unicode code points, and each record observation reports the `offset_
   anywhere in a record must have an exact value within ±{MAX_SAFE_NUMBER}; strings and names
   must not contain U+0000 or unpaired surrogates.
 - Annotation `text` must equal `narrative[start:end]` in Unicode code points with
-  `0 <= start < end <= len(narrative)`. Within a record each `(label, text, start, end)` tuple
+  `0 <= start < end <= len(narrative)`. Within one set each `(label, text, start, end)` tuple
   may occur once; overlapping, nested, adjacent, and same-range different-label spans are valid.
+- An `llm` set carries `provider` and `model` equal to its id and an RFC 3339 UTC `generated_at`
+  ending in `Z`; `kind` must agree with the set id.
 - Known labels: {", ".join(f"`{label}`" for label in LABELS)}.
 - Foreign properties and their exact numeric tokens are preserved in `echo`.
 - Gate order: media type, content encoding, body size, UTF-8/BOM, depth, JSON/duplicates,
@@ -612,9 +632,7 @@ EXAMPLE_LIST: Final[dict[str, Any]] = {
         }
     ],
 }
-EXAMPLE_UPDATE_BODY: Final[dict[str, Any]] = {
-    "annotations": EXAMPLE_ANNOTATED_RECORD["annotations"]
-}
+EXAMPLE_UPDATE_BODY: Final[dict[str, Any]] = {"annotations": EXAMPLE_ANNOTATION_MAP}
 EXAMPLE_UPDATE: Final[dict[str, Any]] = {
     "case_id": "12345678-1",
     "username": "demo_annotator",
@@ -639,14 +657,17 @@ accepted. Problems are 422 `INVALID_PARAMETERS`.
 """
 
 _UPDATE_DESCRIPTION: Final = f"""
-Replaces the `annotations` of one stored record. The body is `{{"annotations": {{...}}}}` and
-nothing else. Its map replaces the stored record's `annotations` value **byte for byte** (it is
-added after the last property when the record had none). Every other byte of the record, such as
-the narrative, foreign metadata, and exact number tokens, is unchanged. `{{}}` removes every
-annotation.
+Replaces the `user` annotation set's map in one stored record. The body is
+`{{"annotations": {{...}}}}` and nothing else. The map is spliced into the stored record **byte
+for byte**: when the record has a `user` set its `annotations` value is replaced; when it has
+`annotation_sets` without `user`, `"user":{{"kind":"user","annotations":<map>}}` is appended to
+them; when it has no `annotation_sets`, that member is added after the last property. Every other
+byte of the record, such as the narrative, LLM sets, foreign metadata, and exact number tokens, is
+unchanged. `{{}}` removes every user annotation.
 
-The updated record is validated exactly like `POST /api/v1/validate`. Because the body's only
-property is `annotations`, the report's issue paths (`/annotations/AE/0/text`) point into the body.
+The updated record is validated exactly like `POST /api/v1/validate`, so the report's issue paths
+are record-relative (`/annotation_sets/user/annotations/AE/0/text`). The former
+`PUT .../annotations` route no longer exists.
 
 **Versions.** `If-Match` must carry the `ETag` of the version being replaced (from export, the
 submission receipt, or a previous update). It is required (428 `PRECONDITION_REQUIRED`); `*`, weak
@@ -686,14 +707,14 @@ def list_operation_extra() -> dict[str, Any]:
     }
 
 
-def update_operation_extra() -> dict[str, Any]:
+def user_set_operation_extra() -> dict[str, Any]:
     failure = "SubmissionFailure"
     return {
         "description": _UPDATE_DESCRIPTION,
         "parameters": [*_identity_parameters(), _IF_MATCH_PARAMETER],
         "requestBody": {
             "required": True,
-            "description": "The complete new annotation map, and nothing else.",
+            "description": "The complete new user annotation map, and nothing else.",
             "content": _json_content(
                 _ref("AnnotationsUpdate"), {"annotated_record": EXAMPLE_UPDATE_BODY}
             ),

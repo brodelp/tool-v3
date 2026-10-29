@@ -19,11 +19,12 @@ from scat_validator.contracts import (
     Mode,
     RecordObservation,
     RequestFailure,
+    SetObservation,
     ValidationReport,
 )
 from scat_validator.diagnostics import InventoryCollector, IssueCollector, Msg
 from scat_validator.paths import PathNode
-from scat_validator.validation import validate_record
+from scat_validator.validation import SetCounts, validate_record
 from scat_validator.wire import JsonValue, contains_forbidden_code_point
 
 ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
@@ -140,6 +141,19 @@ def check_batch_envelope(value: JsonValue) -> IssueCollector | None:
 # ---------------------------------------------------------------- gate 6: records
 
 
+def _set_observations(sets: dict[str, SetCounts] | None) -> dict[str, SetObservation] | None:
+    if sets is None:
+        return None
+    return {
+        set_id: {
+            "kind": counts.kind,
+            "annotation_count": counts.annotation_count,
+            "annotations_by_label": counts.annotations_by_label,
+        }
+        for set_id, counts in sets.items()
+    }
+
+
 def build_report(mode: Mode, slots: Sequence[tuple[JsonValue, PathNode]]) -> ValidationReport:
     """Evaluate every record slot with the shared validator and assemble the report."""
     issues = IssueCollector()
@@ -159,7 +173,7 @@ def build_report(mode: Mode, slots: Sequence[tuple[JsonValue, PathNode]]) -> Val
                 "narrative_code_points": result.narrative_code_points,
                 "offset_unit": result.offset_unit,
                 "annotation_count": result.annotation_count,
-                "annotations_by_label": result.annotations_by_label,
+                "annotation_sets": _set_observations(result.annotation_sets),
                 "checks": result.checks,
             }
         )

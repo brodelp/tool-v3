@@ -3,61 +3,66 @@
   "username": "demo_annotator",
   "narrative": "Aspirin and Aspirin.",
   "offset_unit": "unicode-code-point",
-  "annotations": {
-    "SDrug": [
-      {
-        "text": "Aspirin",
-        "start": 0,
-        "end": 7
-      },
-      {
-        "text": "Aspirin",
-        "start": 12,
-        "end": 19
+  "annotation_sets": {
+    "user": {
+      "kind": "user",
+      "annotations": {
+        "SDrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7
+          },
+          {
+            "text": "Aspirin",
+            "start": 12,
+            "end": 19
+          }
+        ],
+        "Treatment": [
+          {
+            "text": "Aspirin and",
+            "start": 0,
+            "end": 11
+          },
+          {
+            "text": "and Aspirin",
+            "start": 8,
+            "end": 19
+          }
+        ],
+        "ODrug": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7
+          }
+        ],
+        "Relative": [
+          {
+            "text": "Aspirin",
+            "start": 0,
+            "end": 7
+          },
+          {
+            "text": " and",
+            "start": 7,
+            "end": 11
+          }
+        ],
+        "Temporal": [
+          {
+            "text": "Aspirin and Aspirin.",
+            "start": 0,
+            "end": 20
+          },
+          {
+            "text": "and",
+            "start": 8,
+            "end": 11
+          }
+        ]
       }
-    ],
-    "Treatment": [
-      {
-        "text": "Aspirin and",
-        "start": 0,
-        "end": 11
-      },
-      {
-        "text": "and Aspirin",
-        "start": 8,
-        "end": 19
-      }
-    ],
-    "ODrug": [
-      {
-        "text": "Aspirin",
-        "start": 0,
-        "end": 7
-      }
-    ],
-    "Relative": [
-      {
-        "text": "Aspirin",
-        "start": 0,
-        "end": 7
-      },
-      {
-        "text": " and",
-        "start": 7,
-        "end": 11
-      }
-    ],
-    "Temporal": [
-      {
-        "text": "Aspirin and Aspirin.",
-        "start": 0,
-        "end": 20
-      },
-      {
-        "text": "and",
-        "start": 8,
-        "end": 11
-      }
-    ]
+    }
   }
 }

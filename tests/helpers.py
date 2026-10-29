@@ -125,13 +125,54 @@ def raw_fixture(name: str) -> bytes:
     return (RAW_FIXTURES / name).read_bytes()
 
 
+# Raw fixtures predate annotation sets and stay byte-exact. A test whose subject is not the
+# annotations (BOMs, numeric tokens) can rewrite this block in memory to the user set.
+LEGACY_FIXTURE_ANNOTATIONS = (
+    b'  "annotations": {\n'
+    b'    "SDrug": [\n'
+    b'      {"text": "Aspirin", "start": 0, "end": 7, "external_id": "ann-001"}\n'
+    b"    ],\n"
+    b'    "AE": [\n'
+    b'      {"text": "nausea", "start": 15, "end": 21}\n'
+    b"    ]\n"
+    b"  },\n"
+)
+FIXTURE_ANNOTATION_SETS = (
+    b'  "annotation_sets": {\n'
+    b'    "user": {\n'
+    b'      "kind": "user",\n'
+    b'      "annotations": {\n'
+    b'        "SDrug": [\n'
+    b'          {"text": "Aspirin", "start": 0, "end": 7, "external_id": "ann-001"}\n'
+    b"        ],\n"
+    b'        "AE": [\n'
+    b'          {"text": "nausea", "start": 15, "end": 21}\n'
+    b"        ]\n"
+    b"      }\n"
+    b"    }\n"
+    b"  },\n"
+)
+
+
+def annotation_sets_fixture(name: str) -> bytes:
+    """A raw fixture with its legacy ``annotations`` block moved into the user set."""
+    raw = raw_fixture(name)
+    assert raw.count(LEGACY_FIXTURE_ANNOTATIONS) == 1
+    return raw.replace(LEGACY_FIXTURE_ANNOTATIONS, FIXTURE_ANNOTATION_SETS)
+
+
 BASE_RECORD: dict[str, Any] = {
     "case_id": "5001-1",
     "username": "demo_annotator",
     "narrative": "Aspirin caused nausea.",
-    "annotations": {
-        "SDrug": [{"text": "Aspirin", "start": 0, "end": 7, "external_id": "ann-001"}],
-        "AE": [{"text": "nausea", "start": 15, "end": 21}],
+    "annotation_sets": {
+        "user": {
+            "kind": "user",
+            "annotations": {
+                "SDrug": [{"text": "Aspirin", "start": 0, "end": 7, "external_id": "ann-001"}],
+                "AE": [{"text": "nausea", "start": 15, "end": 21}],
+            },
+        }
     },
     "source_metadata": {
         "source_record_id": "external-5001",
@@ -158,6 +199,15 @@ def make_record(**overrides: Any) -> dict[str, Any]:
 MISSING: Any = _MISSING
 
 
+def user_set(annotations: Any) -> dict[str, Any]:
+    return {"kind": "user", "annotations": annotations}
+
+
+def with_user_annotations(annotations: Any, **overrides: Any) -> dict[str, Any]:
+    """The base record whose only annotation set is the user set holding ``annotations``."""
+    return make_record(annotation_sets={"user": user_set(annotations)}, **overrides)
+
+
 def dumps(value: Any) -> bytes:
     """Serialize test-built values that contain no precision-sensitive numbers.
 
@@ -171,6 +221,10 @@ def dumps(value: Any) -> bytes:
 
 def issues_of(response: RawResponse) -> list[tuple[str, str]]:
     return [(i["path"], i["code"]) for i in response.json()["issues"]]
+
+
+def issue_triples(response: RawResponse) -> list[tuple[str, str, str]]:
+    return [(i["location"], i["path"], i["code"]) for i in response.json()["issues"]]
 
 
 def checks_of(response: RawResponse, index: int = 0) -> dict[str, str]:
@@ -211,5 +265,5 @@ def update_annotations(
     headers = list(kwargs.pop("headers", JSON_HEADERS))
     if if_match is not None:
         headers.append((b"if-match", if_match.encode("latin-1")))
-    path = f"/api/v1/submissions/{case_id}/annotations"
+    path = f"/api/v1/submissions/{case_id}/annotation-sets/user"
     return call("PUT", path, body=body, query=query, headers=headers, **kwargs)

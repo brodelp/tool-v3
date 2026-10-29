@@ -11,7 +11,7 @@ from scat_validator.splice import (
     replace_member,
     replace_value,
 )
-from scat_validator.updates import splice_annotations
+from scat_validator.updates import with_set, without_set
 
 
 def test_members_report_name_and_value_spans() -> None:
@@ -90,14 +90,16 @@ def test_json_name_keeps_non_ascii() -> None:
     assert json_name('a"é') == '"a\\"é"'
 
 
-@pytest.mark.parametrize(
-    ("record", "expected"),
-    [
-        ('{"a":1,"annotations":{"X":[]},"b":"}"}', '{"a":1,"annotations":NEW,"b":"}"}'),
-        ('{"a":"x\\"y","b":[1,{"c":2}]}', '{"a":"x\\"y","b":[1,{"c":2}],"annotations":NEW}'),
-        ('{\n"a" : 1e400 \n}', '{\n"a" : 1e400,"annotations":NEW \n}'),
-        ('{"a":"😀","annotations" :\t{}}', '{"a":"😀","annotations" :\tNEW}'),
-    ],
-)
-def test_splice_annotations(record: str, expected: str) -> None:
-    assert splice_annotations(record, "NEW") == expected
+def test_with_set_replaces_appends_and_creates() -> None:
+    sets = '{"a":1,"annotation_sets" : {"x":{}} }'
+    assert with_set(sets, "x", "NEW") == '{"a":1,"annotation_sets" : {"x":NEW} }'
+    assert with_set(sets, "y", "NEW") == '{"a":1,"annotation_sets" : {"x":{},"y":NEW} }'
+    assert with_set('{"a":1}', "y", "NEW") == '{"a":1,"annotation_sets":{"y":NEW}}'
+
+
+def test_without_set_removes_or_reports_absence() -> None:
+    text = '{"a":1,"annotation_sets":{"x":{},"y":2}}'
+    assert without_set(text, "x") == '{"a":1,"annotation_sets":{"y":2}}'
+    assert without_set('{"a":1,"annotation_sets":{"x":{}}}', "x") == '{"a":1,"annotation_sets":{}}'
+    assert without_set(text, "z") is None
+    assert without_set('{"a":1}', "x") is None

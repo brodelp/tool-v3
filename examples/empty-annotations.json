@@ -3,5 +3,10 @@
   "username": "demo_annotator",
   "narrative": "Aspirin caused nausea.",
   "offset_unit": "unicode-code-point",
-  "annotations": {}
+  "annotation_sets": {
+    "user": {
+      "kind": "user",
+      "annotations": {}
+    }
+  }
 }

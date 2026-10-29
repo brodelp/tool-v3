@@ -79,6 +79,8 @@ Entries are ordered by `case_id` in code-point order. An unknown username is an 
 
 #### 3.2 `PUT /api/v1/submissions/{case_id}/annotations?username=<username>`
 
+> Superseded by stage 4 §4.2: the route is now `PUT /api/v1/submissions/{case_id}/annotation-sets/user?username=<username>`.
+
 Replaces the `annotations` member of one stored record.
 
 - **Request headers:** `Content-Type`, `Content-Encoding`, and `Content-Length` pass the stage 1

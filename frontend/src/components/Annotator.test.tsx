@@ -20,7 +20,7 @@ function exportBody(narrative: string, annotations = "{}", version = 1): string 
     version,
     offset_unit: "unicode-code-point",
     record: { case_id: "5001-1", username: "demo_annotator", narrative, __map__: 0 },
-  }).replace('"__map__":0', `"annotations":${annotations}`);
+  }).replace('"__map__":0', `"annotation_sets":{"user":{"kind":"user","annotations":${annotations}}}`);
 }
 
 function setup(narrative: string, annotations = "{}", measurer = pagesOf(10_000)) {
@@ -117,7 +117,7 @@ describe("creating annotations (F10)", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect(url).toBe("/api/v1/submissions/5001-1/annotations?username=demo_annotator");
+    expect(url).toBe("/api/v1/submissions/5001-1/annotation-sets/user?username=demo_annotator");
     expect(init?.method).toBe("PUT");
     expect(init?.headers).toMatchObject({ "If-Match": '"1"' });
     expect(init?.body).toBe('{"annotations":{"AE":[{"text":"nausea","start":15,"end":21}]}}');
@@ -290,7 +290,7 @@ describe("saving (F11)", () => {
         records: [],
         issue_count: 2,
         issues: [
-          { location: "body", path: "/annotations/SDrug/0/text", code: "TEXT_MISMATCH", message: "Text must match." },
+          { location: "body", path: "/annotation_sets/user/annotations/SDrug/0/text", code: "TEXT_MISMATCH", message: "Text must match." },
           { location: "body", path: "", code: "X", message: "Something else." },
         ],
       }),

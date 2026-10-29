@@ -3,13 +3,18 @@
   "username": "brandon.penny",
   "narrative": "Ibuprofen; rash.",
   "offset_unit": "unicode-code-point",
-  "annotations": {
-    "SDrug": [
-      {"text": "Ibuprofen", "start": 0, "end": 9, "id": "a1", "label": "AE", "color": "#ff0000", "extras": {"nested": [1, [2, {}], []]}}
-    ],
-    "AE": [
-      {"text": "rash", "start": 11, "end": 15, "__proto__": {"polluted": true}, "_scatSource": "external"}
-    ]
+  "annotation_sets": {
+    "user": {
+      "kind": "user",
+      "annotations": {
+        "SDrug": [
+          {"text": "Ibuprofen", "start": 0, "end": 9, "id": "a1", "label": "AE", "color": "#ff0000", "extras": {"nested": [1, [2, {}], []]}}
+        ],
+        "AE": [
+          {"text": "rash", "start": 11, "end": 15, "__proto__": {"polluted": true}, "_scatSource": "external"}
+        ]
+      }
+    }
   },
   "id": 7,
   "label": "case",

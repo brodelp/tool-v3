@@ -17,6 +17,7 @@ from scat_validator.openapi_docs import (
 from tests.helpers import (
     JSON_HEADERS,
     RawResponse,
+    annotation_sets_fixture,
     call,
     dumps,
     example_bytes,
@@ -25,6 +26,7 @@ from tests.helpers import (
     post_batch,
     post_single,
     raw_fixture,
+    with_user_annotations,
 )
 
 FAILURE_KEYS = {
@@ -95,13 +97,13 @@ def test_health() -> None:
 
 
 def test_compact_utf8_output_without_ascii_escaping() -> None:
-    record = make_record(username="u", narrative="Café ☕ ok", annotations={})
+    record = make_record(username="u", narrative="Café ☕ ok", annotation_sets={})
     response = post_single(dumps(record))
     assert response.status == 200
     assert b", " not in response.body and b": " not in response.body
-    tagged = make_record(annotations={"Ünknown": []})
+    tagged = with_user_annotations({"Ünknown": []})
     body = post_single(dumps(tagged)).body
-    assert "/annotations/Ünknown".encode() in body
+    assert "/annotation_sets/user/annotations/Ünknown".encode() in body
 
 
 # ---------------------------------------------------------------- V08 preservation
@@ -115,7 +117,8 @@ def test_echo_preserves_nested_reserved_metadata_exactly() -> None:
     echoed = response.json()["echo"]
     assert echoed == json.loads(raw)
     assert echoed["echo"] is False  # a foreign "echo" property is data, not an option
-    assert set(echoed["annotations"]) == {"SDrug", "AE"}  # omitted labels stay omitted
+    # Omitted labels stay omitted.
+    assert set(echoed["annotation_sets"]["user"]["annotations"]) == {"SDrug", "AE"}
     names = [f["path"] for f in response.json()["foreign_fields"]]
     assert names == [
         "/__dict__",
@@ -128,12 +131,12 @@ def test_echo_preserves_nested_reserved_metadata_exactly() -> None:
         "/model_config",
         "/nested",
         "/offsetUnit",
-        "/annotations/SDrug/0/color",
-        "/annotations/SDrug/0/extras",
-        "/annotations/SDrug/0/id",
-        "/annotations/SDrug/0/label",
-        "/annotations/AE/0/__proto__",
-        "/annotations/AE/0/_scatSource",
+        "/annotation_sets/user/annotations/SDrug/0/color",
+        "/annotation_sets/user/annotations/SDrug/0/extras",
+        "/annotation_sets/user/annotations/SDrug/0/id",
+        "/annotation_sets/user/annotations/SDrug/0/label",
+        "/annotation_sets/user/annotations/AE/0/__proto__",
+        "/annotation_sets/user/annotations/AE/0/_scatSource",
     ]
     types = {f["path"]: f["type"] for f in response.json()["foreign_fields"]}
     assert types["/echo"] == "boolean"
@@ -183,7 +186,7 @@ EXPECTED_NUMERIC_TOKENS = [
 
 
 def test_numeric_tokens_survive_echo_byte_for_byte() -> None:
-    raw = raw_fixture("numeric-metadata-record.json")
+    raw = annotation_sets_fixture("numeric-metadata-record.json")
     response = post_single(raw, query="echo=true")
     assert response.status == 200
     echoed = echo_bytes(response)
@@ -202,6 +205,7 @@ def test_unsafe_numbers_fail_as_unsafe_number() -> None:
         ("/unsafe/c", "UNSAFE_NUMBER"),
         ("/unsafe/d", "UNSAFE_NUMBER"),
         ("/unsafe/e", "UNSAFE_NUMBER"),
+        ("/annotations", "SUPERSEDED_FIELD"),  # the fixture predates annotation sets
     ]
     assert "echo" not in response.json()
 
@@ -219,7 +223,7 @@ def test_nonstandard_constants_are_invalid_json(token: str) -> None:
 def test_extreme_exponents_with_safe_values_round_trip(token: str) -> None:
     raw = (
         b'{"case_id":"1-1","username":"u","narrative":"n",'
-        b'"offset_unit":"unicode-code-point","annotations":{},"x":' + token.encode() + b"}"
+        b'"offset_unit":"unicode-code-point","annotation_sets":{},"x":' + token.encode() + b"}"
     )
     response = post_single(raw, query="echo=true")
     assert response.status == 200
@@ -229,7 +233,7 @@ def test_extreme_exponents_with_safe_values_round_trip(token: str) -> None:
 def test_large_exponent_with_huge_coefficient_is_unsafe_without_500() -> None:
     raw = (
         b'{"case_id":"1-1","username":"u","narrative":"n",'
-        b'"offset_unit":"unicode-code-point","annotations":{},"x":-'
+        b'"offset_unit":"unicode-code-point","annotation_sets":{},"x":-'
         + b"9" * 6000
         + b"."
         + b"9" * 6000
@@ -244,7 +248,7 @@ def test_large_exponent_with_huge_coefficient_is_unsafe_without_500() -> None:
 
 
 def test_one_leading_bom_accepted_and_removed_from_echo() -> None:
-    raw = raw_fixture("bom-record.json")
+    raw = annotation_sets_fixture("bom-record.json")
     response = post_single(raw, query="echo=true")
     assert response.status == 200
     assert echo_bytes(response) == example_bytes("metadata-record.json").strip()
@@ -295,7 +299,7 @@ def test_duplicate_names_fail_without_report(name: str) -> None:
 
 
 def test_feff_inside_strings_is_content() -> None:
-    record = make_record(narrative="﻿Aspirin caused nausea.", annotations={}, extra="﻿")
+    record = make_record(narrative="﻿Aspirin caused nausea.", annotation_sets={}, extra="﻿")
     raw = json.dumps(record, ensure_ascii=False).encode()
     response = post_single(raw, query="echo=true")
     assert response.status == 200
@@ -497,7 +501,7 @@ def test_non_object_entries_are_evaluated_slots() -> None:
         None,
         "x",
         [],
-        make_record(case_id="2-1", narrative="", annotations={}),
+        make_record(case_id="2-1", narrative="", annotation_sets={}),
     ]
     response = post_batch(dumps({"records": records}))
     body = response.json()

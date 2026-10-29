@@ -6,10 +6,11 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from scat_validator.config import LABELS, MAX_SAFE_NUMBER
+from scat_validator.config import LABELS, MAX_SAFE_NUMBER, MODEL_PATTERN, PROVIDER_PATTERN
 from scat_validator.contracts import (
     CASE_ID_PATTERN,
     REQUEST_FAILURE_ADAPTER,
+    SET_ID_PATTERN,
     VALIDATION_REPORT_ADAPTER,
     BatchEnvelope,
     Record,
@@ -127,7 +128,13 @@ def test_record_schema(spec: dict[str, Any]) -> None:
     assert record["additionalProperties"] is True
     assert record["required"] == ["case_id", "username", "narrative"]
     assert record["properties"]["offset_unit"]["default"] == "unicode-code-point"
-    assert "default" not in record["properties"]["annotations"]
+    assert "annotations" not in record["properties"]  # superseded, rejected at runtime
+    sets = record["properties"]["annotation_sets"]
+    assert "default" not in sets
+    assert (sets["type"], sets["maxProperties"]) == ("object", 16)
+    assert sets["propertyNames"] == {"pattern": SET_ID_PATTERN}
+    assert sets["additionalProperties"] == {"$ref": "#/components/schemas/AnnotationSet"}
+    assert "patternProperties" not in sets
     assert "project_id" not in record["properties"]
     case_id = record["properties"]["case_id"]
     assert (case_id["type"], case_id["minLength"], case_id["maxLength"]) == ("string", 1, 64)
@@ -138,6 +145,25 @@ def test_record_schema(spec: dict[str, Any]) -> None:
     assert "format" not in username
     assert [branch.get("format") for branch in username["anyOf"]] == [None, "email"]
     assert record["properties"]["offset_unit"]["const"] == "unicode-code-point"
+
+
+def test_annotation_set_schema(spec: dict[str, Any]) -> None:
+    assert SET_ID_PATTERN == (
+        "^(user|llm:[a-z][a-z0-9-]{0,31}:[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127})$"
+    )
+    annotation_set = schemas(spec)["AnnotationSet"]
+    assert annotation_set["additionalProperties"] is True
+    assert annotation_set["required"] == ["kind", "annotations"]
+    properties = annotation_set["properties"]
+    assert list(properties) == ["kind", "annotations", "provider", "model", "generated_at"]
+    assert properties["kind"]["enum"] == ["user", "llm"]
+    assert properties["annotations"] == {"$ref": "#/components/schemas/AnnotationMap"}
+    # Foreign metadata on a user set, so the schema leaves them unconstrained (llm rules are
+    # described and enforced at runtime).
+    for name in ("provider", "model", "generated_at"):
+        assert set(properties[name]) <= {"description", "examples", "title"}, name
+    assert PROVIDER_PATTERN in properties["provider"]["description"]
+    assert MODEL_PATTERN in properties["model"]["description"]
 
 
 def test_annotation_map_and_annotation_schemas(spec: dict[str, Any]) -> None:
@@ -267,12 +293,15 @@ def test_documented_request_examples_are_minimal(spec: dict[str, Any]) -> None:
     }
     batch = spec["paths"]["/api/v1/validate-batch"]["post"]
     batch_examples = batch["requestBody"]["content"]["application/json"]["examples"]
-    # No foreign fields anywhere: records hold only owned fields, annotations only text/start/end.
+    # No foreign fields anywhere: records and sets hold only owned fields, annotations only
+    # text/start/end.
     for example in [*single_examples.values(), *batch_examples.values()]:
         for record in _records_in(example["value"]):
-            assert set(record) <= {"case_id", "username", "narrative", "annotations"}
-            for items in record.get("annotations", {}).values():
-                assert all(set(item) == {"text", "start", "end"} for item in items)
+            assert set(record) <= {"case_id", "username", "narrative", "annotation_sets"}
+            for annotation_set in record.get("annotation_sets", {}).values():
+                assert set(annotation_set) == {"kind", "annotations"}
+                for items in annotation_set["annotations"].values():
+                    assert all(set(item) == {"text", "start", "end"} for item in items)
     for path in POST_PATHS:
         for status in ("200", "422"):
             for example in examples_for(spec["paths"][path]["post"], status).values():
@@ -346,8 +375,24 @@ def test_request_models_agree_with_runtime_on_reference_fixtures() -> None:
     Record.model_validate_json(example_bytes("metadata-record.json"))
     Record.model_validate_json(example_bytes("nested-reserved-metadata.json"))
     BatchEnvelope.model_validate_json(example_bytes("valid-batch.json"))
+    # Provenance-like members of a user set are foreign metadata in both the schema and runtime.
+    foreign = {
+        "kind": "user",
+        "annotations": {},
+        "provider": "Anthropic Inc",
+        "model": 1,
+        "generated_at": "yesterday",
+    }
+    foreign_record = dumps({**EXAMPLE_RECORD, "annotation_sets": {"user": foreign}})
+    Record.model_validate_json(foreign_record)
+    assert post_single(foreign_record).status == 200
+    user_set = {"kind": "user", "annotations": {"ae": []}}
     with pytest.raises(ValidationError):
-        Record.model_validate_json(dumps({**EXAMPLE_RECORD, "annotations": {"ae": []}}))
+        Record.model_validate_json(dumps({**EXAMPLE_RECORD, "annotation_sets": {"user": user_set}}))
+    with pytest.raises(ValidationError):
+        Record.model_validate_json(
+            dumps({**EXAMPLE_RECORD, "annotation_sets": {"User": {**user_set, "annotations": {}}}})
+        )
     with pytest.raises(ValidationError):
         Record.model_validate_json(dumps({**EXAMPLE_RECORD, "case_id": 5001}))
     with pytest.raises(ValidationError):

@@ -1,4 +1,4 @@
-"""Pure record validation (spec §3, §4.2, §6.3, §6.4).
+"""Pure record validation (spec §3, §4.2, §6.3, §6.4; annotation sets: stage 4 spec §2).
 
 Input is the lossless decoded source value; it is only read, never mutated or retained.
 Checks run as passes in reporting order so issues are emitted already sorted, and every
@@ -15,19 +15,30 @@ from email_validator import validate_email
 
 from scat_validator.config import (
     ANNOTATION_FIELDS,
+    ANNOTATION_SETS_FIELD,
     LABEL_ORDER,
     LABELS,
+    LLM_SET_FIELDS,
+    LLM_SET_PREFIX,
+    MAX_ANNOTATION_SETS,
     MAX_USERNAME_CHARS,
     OFFSET_UNIT,
     RECORD_FIELDS,
     REQUIRED_RECORD_FIELDS,
+    SET_FIELDS,
+    SUPERSEDED_FIELD_NAME,
+    USER_SET_ID,
 )
 from scat_validator.contracts import (
     Checks,
     IssueCode,
     OffsetUnit,
+    SetKind,
     is_valid_case_id,
+    is_valid_generated_at,
     is_valid_offset_unit,
+    is_valid_set_id,
+    split_set_id,
 )
 from scat_validator.diagnostics import CheckTracker, InventoryCollector, IssueCollector, Msg
 from scat_validator.paths import PathNode
@@ -141,8 +152,17 @@ _RECORD_KINDS: Final = {
     "username": "str",
     "narrative": "str",
     "offset_unit": "str",
-    "annotations": "dict",
+    ANNOTATION_SETS_FIELD: "dict",
 }
+assert tuple(_RECORD_KINDS) == RECORD_FIELDS
+_SET_KINDS: Final = {
+    "kind": "str",
+    "annotations": "dict",
+    "provider": "str",
+    "model": "str",
+    "generated_at": "str",
+}
+assert tuple(_SET_KINDS) == SET_FIELDS + LLM_SET_FIELDS
 _ANNOTATION_KINDS: Final = {"text": "str", "start": "int", "end": "int"}
 
 _TYPE_MESSAGES: Final = {
@@ -150,7 +170,12 @@ _TYPE_MESSAGES: Final = {
     "username": Msg.STRING_TYPE,
     "narrative": Msg.STRING_TYPE,
     "offset_unit": Msg.STRING_TYPE,
+    ANNOTATION_SETS_FIELD: Msg.SETS_TYPE,
+    "kind": Msg.STRING_TYPE,
     "annotations": Msg.MAP_TYPE,
+    "provider": Msg.STRING_TYPE,
+    "model": Msg.STRING_TYPE,
+    "generated_at": Msg.STRING_TYPE,
     "text": Msg.STRING_TYPE,
     "start": Msg.OFFSET_TYPE,
     "end": Msg.OFFSET_TYPE,
@@ -159,8 +184,9 @@ _TYPE_MESSAGES: Final = {
 
 @dataclass(slots=True)
 class _Item:
-    """One annotation slot inside an array-valued label entry."""
+    """One annotation slot inside an array-valued label entry of one set."""
 
+    set_id: str
     label: str
     known: bool
     node: PathNode
@@ -179,6 +205,32 @@ class _LabelEntry:
     items: list[_Item] | None  # None when the value is not an array
 
 
+@dataclass(slots=True)
+class _SetEntry:
+    """One member of ``annotation_sets``, in set-id order."""
+
+    set_id: str
+    node: PathNode
+    value: JsonValue
+    id_ok: bool
+    llm: bool  # kind is "llm", or, when kind is unusable, the id starts with "llm:"
+    kind: SetKind | None  # the kind value when it is "user" or "llm"
+    slots: dict[str, Slot]  # empty when the set is not an object
+    entries: list[_LabelEntry] | None  # None when the set or its map is unusable
+
+    @property
+    def owned(self) -> tuple[str, ...]:
+        """Owned set properties in diagnostic order; others are foreign metadata."""
+        return SET_FIELDS + LLM_SET_FIELDS if self.llm else SET_FIELDS
+
+
+@dataclass(frozen=True, slots=True)
+class SetCounts:
+    kind: SetKind | None
+    annotation_count: int | None
+    annotations_by_label: dict[str, int] | None
+
+
 @dataclass(frozen=True, slots=True)
 class RecordResult:
     issue_count: int
@@ -188,7 +240,7 @@ class RecordResult:
     narrative_code_points: int | None
     offset_unit: OffsetUnit | None
     annotation_count: int | None
-    annotations_by_label: dict[str, int] | None
+    annotation_sets: dict[str, SetCounts] | None
 
     @property
     def valid(self) -> bool:
@@ -245,28 +297,28 @@ class _RecordValidator:
             return self._result(None, None, None, None, None, None)
 
         slots = {name: _classify(record, name, kind=kind) for name, kind in _RECORD_KINDS.items()}
-        entries = self._label_entries(record, slots)
+        sets = self._set_entries(record, slots)
 
-        self._required_fields(record, slots, entries)
-        self._field_types(slots, entries)
-        case_id, username = self._field_values(record, slots)
-        self._label_membership(entries)
+        self._required_fields(slots, sets)
+        self._field_types(slots, sets)
+        case_id, username = self._field_values(record, slots, sets)
+        self._label_membership(sets)
         narrative = record["narrative"] if slots["narrative"] is Slot.OK else None
         assert narrative is None or isinstance(narrative, str)
-        self._offset_ranges(record, slots, narrative, entries)
-        self._text_matches(narrative, entries)
-        self._annotation_duplicates(entries)
+        self._offset_ranges(record, slots, narrative, sets)
+        self._text_matches(narrative, sets)
+        self._annotation_duplicates(sets)
         self._identity_uniqueness(case_id)
-        self._inventory(record, entries)
+        self._inventory(record, sets)
 
-        counts = self._annotation_counts(entries)
+        annotation_count, set_counts = _set_counts(sets)
         return self._result(
             case_id,
             username,
             None if narrative is None else len(narrative),
             OFFSET_UNIT if self._offset_unit_ok(record, slots) else None,
-            None if counts is None else sum(counts.values()),
-            None if counts is None else {label: n for label, n in counts.items() if n},
+            annotation_count,
+            set_counts,
         )
 
     def _result(
@@ -276,7 +328,7 @@ class _RecordValidator:
         narrative_code_points: int | None,
         offset_unit: OffsetUnit | None,
         annotation_count: int | None,
-        annotations_by_label: dict[str, int] | None,
+        annotation_sets: dict[str, SetCounts] | None,
     ) -> RecordResult:
         return RecordResult(
             issue_count=self.issue_count,
@@ -286,7 +338,7 @@ class _RecordValidator:
             narrative_code_points=narrative_code_points,
             offset_unit=offset_unit,
             annotation_count=annotation_count,
-            annotations_by_label=annotations_by_label,
+            annotation_sets=annotation_sets,
         )
 
     @staticmethod
@@ -295,63 +347,80 @@ class _RecordValidator:
         slot = slots["offset_unit"]
         return slot is Slot.MISSING or (slot is Slot.OK and record["offset_unit"] == OFFSET_UNIT)
 
-    def _label_entries(
+    def _set_entries(
         self, record: dict[str, JsonValue], slots: dict[str, Slot]
-    ) -> list[_LabelEntry] | None:
-        """Label entries in check order; ``[]`` when the optional map is absent (no annotations),
-        ``None`` when a supplied map is not an object."""
-        if slots["annotations"] is Slot.MISSING:
+    ) -> list[_SetEntry] | None:
+        """Sets in id (code-point) order; ``[]`` when the optional member is absent (no
+        annotations), ``None`` when a supplied ``annotation_sets`` is not an object."""
+        slot = slots[ANNOTATION_SETS_FIELD]
+        if slot is Slot.MISSING:
             return []
-        if slots["annotations"] is not Slot.OK:
+        if slot is not Slot.OK:
             return None
-        annotations = record["annotations"]
-        assert isinstance(annotations, dict)
-        map_node = self.node.child("annotations")
-        entries: list[_LabelEntry] = []
-        for label in ordered_labels(annotations):
-            label_value = annotations[label]
-            label_node = map_node.child(label)
-            items: list[_Item] | None = None
-            if isinstance(label_value, list):
-                items = []
-                for index, element in enumerate(label_value):
-                    element_slots = (
-                        {
-                            name: _classify(element, name, kind=kind)
-                            for name, kind in _ANNOTATION_KINDS.items()
-                        }
-                        if isinstance(element, dict)
-                        else {}
-                    )
-                    items.append(
-                        _Item(
-                            label=label,
-                            known=label in LABEL_ORDER,
-                            node=label_node.child(str(index)),
-                            value=element,
-                            slots=element_slots,
-                        )
-                    )
-            entries.append(
-                _LabelEntry(
-                    label=label,
-                    known=label in LABEL_ORDER,
-                    forbidden=contains_forbidden_code_point(label),
-                    node=label_node,
-                    value=label_value,
-                    items=items,
+        sets = record[ANNOTATION_SETS_FIELD]
+        assert isinstance(sets, dict)
+        sets_node = self.node.child(ANNOTATION_SETS_FIELD)
+        result: list[_SetEntry] = []
+        for set_id in sorted(sets):
+            value = sets[set_id]
+            node = sets_node.child(set_id)
+            id_llm = set_id.startswith(LLM_SET_PREFIX)
+            if not isinstance(value, dict):
+                result.append(
+                    _SetEntry(set_id, node, value, is_valid_set_id(set_id), id_llm, None, {}, None)
+                )
+                continue
+            set_slots = {
+                name: _classify(value, name, kind=kind) for name, kind in _SET_KINDS.items()
+            }
+            kind_value = value["kind"] if set_slots["kind"] is Slot.OK else None
+            kind: SetKind | None = (
+                "user" if kind_value == "user" else "llm" if kind_value == "llm" else None
+            )
+            entries = None
+            if set_slots["annotations"] is Slot.OK:
+                annotations = value["annotations"]
+                assert isinstance(annotations, dict)
+                entries = _label_entries(annotations, node.child("annotations"), set_id)
+            result.append(
+                _SetEntry(
+                    set_id=set_id,
+                    node=node,
+                    value=value,
+                    id_ok=is_valid_set_id(set_id),
+                    llm=id_llm if kind is None else kind == "llm",
+                    kind=kind,
+                    slots=set_slots,
+                    entries=entries,
                 )
             )
-        return entries
+        return result
 
     @staticmethod
-    def _iter_items(entries: list[_LabelEntry]) -> Iterator[_Item | None]:
-        """Each annotation item in check order; ``None`` marks a non-array label value."""
+    def _iter_items(entries: list[_LabelEntry] | None) -> Iterator[_Item | None]:
+        """Each annotation item of one set in check order; ``None`` marks a blocked item: a
+        non-array label value, or an unusable set or map."""
+        if entries is None:
+            yield None
+            return
         for entry in entries:
             if entry.items is None:
                 yield None
             else:
                 yield from entry.items
+
+    @staticmethod
+    def _entry_lists(sets: list[_SetEntry] | None) -> Iterator[list[_LabelEntry] | None]:
+        """Each set's label entries in set-id order; ``None`` marks an unusable set or map."""
+        if sets is None:
+            yield None
+            return
+        for set_entry in sets:
+            yield set_entry.entries
+
+    def _all_items(self, sets: list[_SetEntry] | None) -> Iterator[_Item | None]:
+        for entries in self._entry_lists(sets):
+            yield from self._iter_items(entries)
 
     # -------------------------------------------------------------- json_values
 
@@ -384,27 +453,29 @@ class _RecordValidator:
 
     # -------------------------------------------------------------- required_fields
 
-    def _required_fields(
-        self,
-        record: dict[str, JsonValue],
-        slots: dict[str, Slot],
-        entries: list[_LabelEntry] | None,
-    ) -> None:
+    def _required_fields(self, slots: dict[str, Slot], sets: list[_SetEntry] | None) -> None:
         check = "required_fields"
         for name in REQUIRED_RECORD_FIELDS:
             if slots[name] is Slot.MISSING:
                 self.issue(check, self.node.child(name), "REQUIRED_FIELD", Msg.REQUIRED)
-        if entries is None:
-            # A missing or non-object map blocks annotation presence checks.
+        if sets is None:
+            # A non-object annotation_sets blocks set and annotation presence checks.
             self.tracker.block(check)
             return
-        for item in self._iter_items(entries):
-            if item is None or not isinstance(item.value, dict):
+        for set_entry in sets:
+            if not isinstance(set_entry.value, dict):
                 self.tracker.block(check)
                 continue
-            for name in ANNOTATION_FIELDS:
-                if item.slots[name] is Slot.MISSING:
-                    self.issue(check, item.node.child(name), "REQUIRED_FIELD", Msg.REQUIRED)
+            for name in set_entry.owned:
+                if set_entry.slots[name] is Slot.MISSING:
+                    self.issue(check, set_entry.node.child(name), "REQUIRED_FIELD", Msg.REQUIRED)
+            for item in self._iter_items(set_entry.entries):
+                if item is None or not isinstance(item.value, dict):
+                    self.tracker.block(check)
+                    continue
+                for name in ANNOTATION_FIELDS:
+                    if item.slots[name] is Slot.MISSING:
+                        self.issue(check, item.node.child(name), "REQUIRED_FIELD", Msg.REQUIRED)
 
     # -------------------------------------------------------------- field_types
 
@@ -414,30 +485,39 @@ class _RecordValidator:
         elif slot is not Slot.OK:
             self.tracker.block("field_types")
 
-    def _field_types(self, slots: dict[str, Slot], entries: list[_LabelEntry] | None) -> None:
+    def _field_types(self, slots: dict[str, Slot], sets: list[_SetEntry] | None) -> None:
         for name in RECORD_FIELDS:
             if slots[name] is Slot.MISSING and name not in REQUIRED_RECORD_FIELDS:
                 continue  # an absent optional field has nothing to type-check
             self._type_slot(slots[name], self.node.child(name), _TYPE_MESSAGES[name])
-        if entries is None:
-            if slots["annotations"] is not Slot.WRONG_TYPE:
-                self.tracker.block("field_types")
-            return
-        for entry in entries:
-            if entry.items is None:
-                self._type_slot(Slot.WRONG_TYPE, entry.node, Msg.ARRAY_TYPE)
+        for set_entry in sets or []:  # None: the wrong-typed member was reported above
+            if not isinstance(set_entry.value, dict):
+                self._type_slot(Slot.WRONG_TYPE, set_entry.node, Msg.SET_OBJECT)
                 continue
-            for item in entry.items:
-                if not isinstance(item.value, dict):
-                    self._type_slot(Slot.WRONG_TYPE, item.node, Msg.ANNOTATION_OBJECT)
+            for name in set_entry.owned:
+                self._type_slot(
+                    set_entry.slots[name], set_entry.node.child(name), _TYPE_MESSAGES[name]
+                )
+            for entry in set_entry.entries or []:  # None: the map was reported above
+                if entry.items is None:
+                    self._type_slot(Slot.WRONG_TYPE, entry.node, Msg.ARRAY_TYPE)
                     continue
-                for name in ANNOTATION_FIELDS:
-                    self._type_slot(item.slots[name], item.node.child(name), _TYPE_MESSAGES[name])
+                for item in entry.items:
+                    if not isinstance(item.value, dict):
+                        self._type_slot(Slot.WRONG_TYPE, item.node, Msg.ANNOTATION_OBJECT)
+                        continue
+                    for name in ANNOTATION_FIELDS:
+                        self._type_slot(
+                            item.slots[name], item.node.child(name), _TYPE_MESSAGES[name]
+                        )
 
     # -------------------------------------------------------------- field_values
 
     def _field_values(
-        self, record: dict[str, JsonValue], slots: dict[str, Slot]
+        self,
+        record: dict[str, JsonValue],
+        slots: dict[str, Slot],
+        sets: list[_SetEntry] | None,
     ) -> tuple[str | None, str | None]:
         check = "field_values"
         case_id: str | None = None
@@ -487,21 +567,76 @@ class _RecordValidator:
                 )
         elif slots["offset_unit"] is not Slot.MISSING:
             self.tracker.block(check)
+
+        if SUPERSEDED_FIELD_NAME in record:
+            # Not owned and not foreign metadata; its content is only covered by json_values.
+            node = self.node.child(SUPERSEDED_FIELD_NAME)
+            self.issue(check, node, "SUPERSEDED_FIELD", Msg.SUPERSEDED)
+        self._set_values(sets)
         return case_id, username
+
+    def _set_values(self, sets: list[_SetEntry] | None) -> None:
+        check = "field_values"
+        if sets is None:
+            self.tracker.block(check)
+            return
+        if len(sets) > MAX_ANNOTATION_SETS:
+            node = self.node.child(ANNOTATION_SETS_FIELD)
+            self.issue(check, node, "LIMIT_EXCEEDED", Msg.SET_LIMIT)
+        for set_entry in sets:
+            if contains_forbidden_code_point(set_entry.set_id):
+                # Reported once by json_values as an unsupported name; not also as an invalid id.
+                self.tracker.block(check)
+            elif not set_entry.id_ok:
+                self.issue(check, set_entry.node, "INVALID_SET_ID", Msg.SET_ID)
+            if not isinstance(set_entry.value, dict):
+                self.tracker.block(check)
+                continue
+            self._set_kind(set_entry)
+            if not set_entry.llm:
+                continue  # provenance on a user set is foreign metadata
+            provenance = split_set_id(set_entry.set_id)
+            for name, index in (("provider", 0), ("model", 1)):
+                if set_entry.slots[name] is not Slot.OK:
+                    self.tracker.block(check)
+                elif provenance is not None and set_entry.value[name] != provenance[index]:
+                    node = set_entry.node.child(name)
+                    self.issue(check, node, "SET_ID_MISMATCH", Msg.SET_ID_MISMATCH)
+            if set_entry.slots["generated_at"] is not Slot.OK:
+                self.tracker.block(check)
+                continue
+            generated_at = set_entry.value["generated_at"]
+            assert isinstance(generated_at, str)
+            if not is_valid_generated_at(generated_at):
+                node = set_entry.node.child("generated_at")
+                self.issue(check, node, "INVALID_TIMESTAMP", Msg.TIMESTAMP)
+
+    def _set_kind(self, set_entry: _SetEntry) -> None:
+        """kind is user or llm and, for a valid id, agrees with it."""
+        if set_entry.slots["kind"] is not Slot.OK:
+            self.tracker.block("field_values")
+            return
+        expected = (
+            ("user" if set_entry.set_id == USER_SET_ID else "llm") if set_entry.id_ok else None
+        )
+        if set_entry.kind is None or (expected is not None and set_entry.kind != expected):
+            node = set_entry.node.child("kind")
+            self.issue("field_values", node, "INVALID_SET_KIND", Msg.SET_KIND)
 
     # -------------------------------------------------------------- label_membership
 
-    def _label_membership(self, entries: list[_LabelEntry] | None) -> None:
+    def _label_membership(self, sets: list[_SetEntry] | None) -> None:
         check = "label_membership"
-        if entries is None:
-            self.tracker.block(check)
-            return
-        for entry in entries:
-            if entry.forbidden:
-                # Reported once by json_values as an unsupported name; not also as unknown.
+        for entries in self._entry_lists(sets):
+            if entries is None:
                 self.tracker.block(check)
-            elif not entry.known:
-                self.issue(check, entry.node, "UNKNOWN_LABEL", Msg.UNKNOWN_LABEL)
+                continue
+            for entry in entries:
+                if entry.forbidden:
+                    # Reported once by json_values as an unsupported name; not also as unknown.
+                    self.tracker.block(check)
+                elif not entry.known:
+                    self.issue(check, entry.node, "UNKNOWN_LABEL", Msg.UNKNOWN_LABEL)
 
     # -------------------------------------------------------------- offset_ranges
 
@@ -510,14 +645,11 @@ class _RecordValidator:
         record: dict[str, JsonValue],
         slots: dict[str, Slot],
         narrative: str | None,
-        entries: list[_LabelEntry] | None,
+        sets: list[_SetEntry] | None,
     ) -> None:
         check = "offset_ranges"
-        if entries is None:
-            self.tracker.block(check)
-            return
         unit_ok = self._offset_unit_ok(record, slots)
-        for item in self._iter_items(entries):
+        for item in self._all_items(sets):
             if item is None or not isinstance(item.value, dict):
                 self.tracker.block(check)
                 continue
@@ -532,12 +664,9 @@ class _RecordValidator:
 
     # -------------------------------------------------------------- text_matches
 
-    def _text_matches(self, narrative: str | None, entries: list[_LabelEntry] | None) -> None:
+    def _text_matches(self, narrative: str | None, sets: list[_SetEntry] | None) -> None:
         check = "text_matches"
-        if entries is None:
-            self.tracker.block(check)
-            return
-        for item in self._iter_items(entries):
+        for item in self._all_items(sets):
             if item is None or not item.range_passed or item.slots["text"] is not Slot.OK:
                 self.tracker.block(check)
                 continue
@@ -551,13 +680,11 @@ class _RecordValidator:
 
     # -------------------------------------------------------------- annotation_duplicates
 
-    def _annotation_duplicates(self, entries: list[_LabelEntry] | None) -> None:
+    def _annotation_duplicates(self, sets: list[_SetEntry] | None) -> None:
         check = "annotation_duplicates"
-        if entries is None:
-            self.tracker.block(check)
-            return
-        seen: set[tuple[str, str, int, int]] = set()
-        for item in self._iter_items(entries):
+        # The set id is part of the key: the same tuple in two sets is not a duplicate.
+        seen: set[tuple[str, str, str, int, int]] = set()
+        for item in self._all_items(sets):
             if item is None or not item.known or item.slots.get("text") is not Slot.OK:
                 self.tracker.block(check)
                 continue
@@ -568,7 +695,7 @@ class _RecordValidator:
             assert isinstance(item.value, dict)
             text = item.value["text"]
             assert isinstance(text, str)
-            key = (item.label, text, start, end)
+            key = (item.set_id, item.label, text, start, end)
             if key in seen:
                 self.issue(check, item.node, "DUPLICATE_ANNOTATION", Msg.DUPLICATE_ANNOTATION)
             else:
@@ -587,28 +714,107 @@ class _RecordValidator:
         else:
             self.seen_identities.add(case_id)
 
-    # -------------------------------------------------------------- inventory and counts
+    # -------------------------------------------------------------- inventory
 
-    def _inventory(self, record: dict[str, JsonValue], entries: list[_LabelEntry] | None) -> None:
+    def _inventory(self, record: dict[str, JsonValue], sets: list[_SetEntry] | None) -> None:
+        """Record foreign names, then per set its foreign names and its annotations' names."""
         for name in sorted(record):
-            if name not in _RECORD_KINDS:
+            if name not in _RECORD_KINDS and name != SUPERSEDED_FIELD_NAME:
                 self.inventory.add(self.node, name, record[name])
-        for item in self._iter_items(entries or []):
-            if item is not None and isinstance(item.value, dict):
-                for name in sorted(item.value):
-                    if name not in _ANNOTATION_KINDS:
-                        self.inventory.add(item.node, name, item.value[name])
+        for set_entry in sets or []:
+            if not isinstance(set_entry.value, dict):
+                continue
+            owned = set_entry.owned
+            for name in sorted(set_entry.value):
+                if name not in owned:
+                    self.inventory.add(set_entry.node, name, set_entry.value[name])
+            for item in self._iter_items(set_entry.entries):
+                if item is not None and isinstance(item.value, dict):
+                    for name in sorted(item.value):
+                        if name not in _ANNOTATION_KINDS:
+                            self.inventory.add(item.node, name, item.value[name])
 
-    @staticmethod
-    def _annotation_counts(entries: list[_LabelEntry] | None) -> dict[str, int] | None:
-        if entries is None:
+
+# ---------------------------------------------------------------- label entries and counts
+
+
+def _label_entries(
+    annotations: dict[str, JsonValue], map_node: PathNode, set_id: str
+) -> list[_LabelEntry]:
+    """One set's label entries in check order."""
+    entries: list[_LabelEntry] = []
+    for label in ordered_labels(annotations):
+        label_value = annotations[label]
+        label_node = map_node.child(label)
+        items: list[_Item] | None = None
+        if isinstance(label_value, list):
+            items = []
+            for index, element in enumerate(label_value):
+                element_slots = (
+                    {
+                        name: _classify(element, name, kind=kind)
+                        for name, kind in _ANNOTATION_KINDS.items()
+                    }
+                    if isinstance(element, dict)
+                    else {}
+                )
+                items.append(
+                    _Item(
+                        set_id=set_id,
+                        label=label,
+                        known=label in LABEL_ORDER,
+                        node=label_node.child(str(index)),
+                        value=element,
+                        slots=element_slots,
+                    )
+                )
+        entries.append(
+            _LabelEntry(
+                label=label,
+                known=label in LABEL_ORDER,
+                forbidden=contains_forbidden_code_point(label),
+                node=label_node,
+                value=label_value,
+                items=items,
+            )
+        )
+    return entries
+
+
+def _label_counts(entries: list[_LabelEntry] | None) -> dict[str, int] | None:
+    """Stage 1 §6.3 counts of one set's map: known labels with nonzero counts, else None."""
+    if entries is None:
+        return None
+    counts: dict[str, int] = {}
+    for entry in entries:
+        if not entry.known or entry.items is None:
             return None
-        counts: dict[str, int] = {}
-        for entry in entries:
-            if not entry.known or entry.items is None:
-                return None
+        if entry.items:
             counts[entry.label] = len(entry.items)
-        return counts
+    return counts
+
+
+def _set_counts(
+    sets: list[_SetEntry] | None,
+) -> tuple[int | None, dict[str, SetCounts] | None]:
+    """The total and per-set observations (stage 4 §2.4).
+
+    Both are null when ``annotation_sets`` is not an object, and also over the set limit or
+    with an invalid set id, as an unknown label nulls stage 1 counts; this keeps the
+    observation bounded, since set ids are echoed as keys.
+    """
+    if sets is None or len(sets) > MAX_ANNOTATION_SETS:
+        return None, None
+    if not all(set_entry.id_ok for set_entry in sets):
+        return None, None
+    total: int | None = 0
+    observed: dict[str, SetCounts] = {}
+    for set_entry in sets:
+        counts = _label_counts(set_entry.entries)
+        count = None if counts is None else sum(counts.values())
+        observed[set_entry.set_id] = SetCounts(set_entry.kind, count, counts)
+        total = None if total is None or count is None else total + count
+    return total, observed
 
 
 def _offsets(item: _Item) -> tuple[int | None, int | None]:

@@ -29,7 +29,7 @@ application.
 | `POST /api/v1/submissions` | Validate one record and store it (201; 409 if that `(case_id, username)` exists) |
 | `GET /api/v1/submissions?username=…` | List one username's submissions (case IDs, timestamps, versions) |
 | `GET /api/v1/submissions/{case_id}?username=…` | Export one stored record, wrapped with `submitted_at`, `updated_at`, `version`, and `offset_unit`; `ETag` names the version |
-| `PUT /api/v1/submissions/{case_id}/annotations?username=…` | Replace the record's annotations (`If-Match` required; 412 if the version changed) |
+| `PUT /api/v1/submissions/{case_id}/annotation-sets/user?username=…` | Replace the record's user annotation set (`If-Match` required; 412 if the version changed) |
 | `DELETE /api/v1/submissions/{case_id}?username=…` | Permanently delete one stored record (204) |
 | `GET /healthz` | Liveness: exactly `{"status":"ok"}` (no database check) |
 | `GET /docs`, `GET /openapi.json` | Interactive documentation and the OpenAPI contract |

@@ -41,7 +41,7 @@ from scat_validator.openapi_docs import (
     list_operation_extra,
     operation_extra,
     submit_operation_extra,
-    update_operation_extra,
+    user_set_operation_extra,
 )
 from scat_validator.paths import PathNode
 from scat_validator.reporting import (
@@ -55,9 +55,9 @@ from scat_validator.reporting import (
 )
 from scat_validator.storage import UNAVAILABLE_ERRORS, Storage
 from scat_validator.submissions import (
-    ANNOTATIONS_ROUTE,
     SUBMISSION_ROUTE,
     SUBMISSIONS_ROUTE,
+    USER_SET_ROUTE,
     Identity,
     parse_identity,
     parse_username,
@@ -72,7 +72,7 @@ from scat_validator.updates import (
     candidate_size_issues,
     check_update_shape,
     if_match_version,
-    splice_annotations,
+    with_user_map,
 )
 from scat_validator.wire import DecodeFailure, JsonValue, decode_document, read_limited_body
 
@@ -380,10 +380,10 @@ def parse_update_body(body: bytes) -> str | Outcome:
 
 
 def evaluate_candidate(
-    record_text: str, annotations: str
+    record_text: str, candidate_of: Callable[[str], str]
 ) -> Outcome | tuple[ValidationReport, str]:
-    """Steps 8-9: splice the map into the stored record, then validate it as one record."""
-    candidate = splice_annotations(record_text, annotations)
+    """Steps 8-9: build the candidate from the stored record, then validate it as one record."""
+    candidate = candidate_of(record_text)
     size_issues = candidate_size_issues(candidate)
     if size_issues is not None:
         return submission_failure("INVALID_DOCUMENT", size_issues)
@@ -414,7 +414,9 @@ async def _update(request: Request) -> Outcome:
             return submission_failure("NOT_FOUND")
         if if_match_version(if_match) != stored.version:
             return submission_failure("VERSION_CONFLICT")
-        evaluation = await run_in_threadpool(evaluate_candidate, stored.source_json, annotations)
+        evaluation = await run_in_threadpool(
+            evaluate_candidate, stored.source_json, lambda text: with_user_map(text, annotations)
+        )
         if isinstance(evaluation, Outcome):
             return evaluation
         report, candidate = evaluation
@@ -442,12 +444,12 @@ async def list_submissions(request: Request) -> Response:
 
 
 @app.put(
-    ANNOTATIONS_ROUTE, openapi_extra=update_operation_extra(), summary="Replace the annotations"
+    USER_SET_ROUTE, openapi_extra=user_set_operation_extra(), summary="Replace the user annotations"
 )
-async def update_annotations(request: Request) -> Response:
+async def update_user_set(request: Request) -> Response:
     return await _respond(
         "PUT",
-        ANNOTATIONS_ROUTE,
+        USER_SET_ROUTE,
         lambda: _update(request),
         lambda: submission_failure("INTERNAL_ERROR"),
     )

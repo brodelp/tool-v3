@@ -2,7 +2,12 @@
 
 from typing import Final
 
-from scat_validator.config import MAX_FOREIGN_FIELDS, MAX_ISSUES, MAX_MESSAGE_BYTES
+from scat_validator.config import (
+    MAX_ANNOTATION_SETS,
+    MAX_FOREIGN_FIELDS,
+    MAX_ISSUES,
+    MAX_MESSAGE_BYTES,
+)
 from scat_validator.contracts import (
     Checks,
     CheckStatus,
@@ -79,8 +84,19 @@ class Msg:
     USERNAME_REQUIRED: Final = "The username query parameter is required."
     USERNAME_REPEATED: Final = "username must not be repeated."
     UNKNOWN_IDENTITY_QUERY: Final = "Only the username query parameter is supported."
+    SETS_TYPE: Final = "annotation_sets must be a JSON object mapping set ids to set objects."
+    SET_OBJECT: Final = "An annotation set must be a JSON object."
+    SUPERSEDED: Final = "Use annotation_sets.user.annotations instead."
+    SET_LIMIT: Final = "annotation_sets must not have more than 16 sets."
+    SET_ID: Final = "A set id must be user or llm:<provider>:<model>."
+    SET_KIND: Final = "kind must be user for the user set and llm for an llm set."
+    SET_ID_MISMATCH: Final = "provider and model must match the set id."
+    TIMESTAMP: Final = "generated_at must be an RFC 3339 UTC timestamp ending in Z."
     UNKNOWN_UPDATE_FIELD: Final = "The request body allows only the annotations property."
     UPDATED_RECORD_SIZE: Final = "The updated record must not exceed 5242880 bytes."
+
+
+assert f" {MAX_ANNOTATION_SETS} " in Msg.SET_LIMIT
 
 
 def compose_message(message: str, *, length_fallback: bool, name_fallback: bool) -> str:

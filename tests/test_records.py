@@ -14,6 +14,7 @@ from tests.helpers import (
     make_record,
     post_batch,
     post_single,
+    with_user_annotations,
 )
 
 ALL_PASSED = {
@@ -27,6 +28,14 @@ ALL_PASSED = {
     "annotation_duplicates": "passed",
     "record_identity_uniqueness": "passed",
 }
+
+
+def user_map(record: dict[str, Any]) -> Any:
+    return record["annotation_sets"]["user"]["annotations"]
+
+
+def user_counts(observation: dict[str, Any]) -> Any:
+    return observation["annotation_sets"]["user"]["annotations_by_label"]
 
 
 def with_checks(**changes: str) -> dict[str, str]:
@@ -54,7 +63,7 @@ def raw_record(**replacements: str) -> bytes:
 
 # ---------------------------------------------------------------- V02 missing / null / wrong types
 
-CORE = ["case_id", "username", "narrative", "offset_unit", "annotations"]
+CORE = ["case_id", "username", "narrative", "offset_unit", "annotation_sets"]
 REQUIRED = ["case_id", "username", "narrative"]
 
 
@@ -75,7 +84,7 @@ def test_null_core_field_is_invalid_type_only(field: str) -> None:
     assert response.status == 422
     assert issues_of(response) == [(f"/{field}", "INVALID_TYPE")]
     checks = checks_of(response)
-    assert checks["required_fields"] == ("skipped" if field == "annotations" else "passed")
+    assert checks["required_fields"] == ("skipped" if field == "annotation_sets" else "passed")
     assert checks["field_types"] == "failed"
 
 
@@ -91,8 +100,8 @@ def test_null_core_field_is_invalid_type_only(field: str) -> None:
         ("narrative", 5),
         ("narrative", False),
         ("offset_unit", 1),
-        ("annotations", []),
-        ("annotations", "SDrug"),
+        ("annotation_sets", []),
+        ("annotation_sets", "user"),
     ],
 )
 def test_wrong_core_types(field: str, value: Any) -> None:
@@ -110,10 +119,10 @@ def test_wrong_core_types(field: str, value: Any) -> None:
 
 def test_wrong_narrative_type_skips_ranges_but_still_checks_duplicates() -> None:
     annotations = {"AE": [{"text": "x", "start": 0, "end": 1}, {"text": "x", "start": 0, "end": 1}]}
-    response = single(make_record(narrative=7, annotations=annotations))
+    response = single(with_user_annotations(narrative=7, annotations=annotations))
     assert issues_of(response) == [
         ("/narrative", "INVALID_TYPE"),
-        ("/annotations/AE/1", "DUPLICATE_ANNOTATION"),
+        ("/annotation_sets/user/annotations/AE/1", "DUPLICATE_ANNOTATION"),
     ]
     assert checks_of(response) == with_checks(
         field_types="failed",
@@ -128,12 +137,12 @@ def test_wrong_narrative_type_skips_ranges_but_still_checks_duplicates() -> None
 @pytest.mark.parametrize("value", [None, 5, "x", {}, True])
 def test_non_array_label_value(value: Any) -> None:
     record = make_record()
-    record["annotations"]["AE"] = value
+    user_map(record)["AE"] = value
     response = single(record)
-    assert issues_of(response) == [("/annotations/AE", "INVALID_TYPE")]
+    assert issues_of(response) == [("/annotation_sets/user/annotations/AE", "INVALID_TYPE")]
     observation = response.json()["records"][0]
     assert observation["annotation_count"] is None
-    assert observation["annotations_by_label"] is None
+    assert user_counts(observation) is None
     checks = checks_of(response)
     assert checks["field_types"] == "failed"
     assert checks["offset_ranges"] == "skipped"
@@ -143,20 +152,22 @@ def test_non_array_label_value(value: Any) -> None:
 @pytest.mark.parametrize("value", [None, 5, "x", [], True])
 def test_non_object_annotation_entry(value: Any) -> None:
     record = make_record()
-    record["annotations"]["AE"] = [value, {"text": "nausea", "start": 15, "end": 21}]
+    user_map(record)["AE"] = [value, {"text": "nausea", "start": 15, "end": 21}]
     response = single(record)
-    assert issues_of(response) == [("/annotations/AE/0", "INVALID_TYPE")]
+    assert issues_of(response) == [("/annotation_sets/user/annotations/AE/0", "INVALID_TYPE")]
     observation = response.json()["records"][0]
     assert observation["annotation_count"] == 3
-    assert observation["annotations_by_label"] == {"SDrug": 1, "AE": 2}
+    assert user_counts(observation) == {"SDrug": 1, "AE": 2}
 
 
 @pytest.mark.parametrize("field", ["text", "start", "end"])
 def test_missing_annotation_field(field: str) -> None:
     record = make_record()
-    del record["annotations"]["AE"][0][field]
+    del user_map(record)["AE"][0][field]
     response = single(record)
-    assert issues_of(response) == [(f"/annotations/AE/0/{field}", "REQUIRED_FIELD")]
+    assert issues_of(response) == [
+        (f"/annotation_sets/user/annotations/AE/0/{field}", "REQUIRED_FIELD")
+    ]
     checks = checks_of(response)
     assert checks["required_fields"] == "failed"
     assert checks["field_types"] == "skipped"
@@ -171,9 +182,11 @@ def test_missing_annotation_field(field: str) -> None:
 )
 def test_wrong_annotation_field_type(field: str, value: Any) -> None:
     record = make_record()
-    record["annotations"]["AE"][0][field] = value
+    user_map(record)["AE"][0][field] = value
     response = single(record)
-    assert issues_of(response) == [(f"/annotations/AE/0/{field}", "INVALID_TYPE")]
+    assert issues_of(response) == [
+        (f"/annotation_sets/user/annotations/AE/0/{field}", "INVALID_TYPE")
+    ]
 
 
 def test_non_object_single_body_fails_gate_five() -> None:
@@ -188,10 +201,10 @@ def test_non_object_single_body_fails_gate_five() -> None:
 
 def test_independent_issues_are_all_reported() -> None:
     record = make_record(case_id="5001", username="", narrative="   ", offset_unit="utf-16")
-    record["annotations"]["AE"][0]["start"] = "15"
+    user_map(record)["AE"][0]["start"] = "15"
     response = single(record)
     assert issues_of(response) == [
-        ("/annotations/AE/0/start", "INVALID_TYPE"),
+        ("/annotation_sets/user/annotations/AE/0/start", "INVALID_TYPE"),
         ("/case_id", "INVALID_ID"),
         ("/username", "EMPTY_VALUE"),
         ("/narrative", "EMPTY_VALUE"),
@@ -302,7 +315,9 @@ def json_type(value: Any) -> str:
 @pytest.mark.parametrize("value", ["true", '"0"', "0.0", "0e0", "null"])
 def test_non_integer_token_offsets_are_invalid_type(value: str) -> None:
     response = post_single(raw_record(start=value))
-    assert issues_of(response) == [("/annotations/SDrug/0/start", "INVALID_TYPE")]
+    assert issues_of(response) == [
+        ("/annotation_sets/user/annotations/SDrug/0/start", "INVALID_TYPE")
+    ]
     assert checks_of(response)["offset_ranges"] == "skipped"
 
 
@@ -310,12 +325,16 @@ def test_start_zero_and_negative_zero_are_valid_offsets() -> None:
     assert post_single(raw_record(start="0")).status == 200
     assert post_single(raw_record(start="-0")).status == 200
     response = post_single(raw_record(end="7.0"))
-    assert issues_of(response) == [("/annotations/SDrug/0/end", "INVALID_TYPE")]
+    assert issues_of(response) == [
+        ("/annotation_sets/user/annotations/SDrug/0/end", "INVALID_TYPE")
+    ]
 
 
 def test_unsafe_offset_is_unsafe_number_only() -> None:
     response = post_single(raw_record(end="9007199254740992"))
-    assert issues_of(response) == [("/annotations/SDrug/0/end", "UNSAFE_NUMBER")]
+    assert issues_of(response) == [
+        ("/annotation_sets/user/annotations/SDrug/0/end", "UNSAFE_NUMBER")
+    ]
     checks = checks_of(response)
     assert checks["offset_ranges"] == "skipped"
     assert checks["annotation_duplicates"] == "skipped"
@@ -359,7 +378,7 @@ def test_adjacent_unsafe_metadata_numbers_fail(fragment: str) -> None:
 
 @pytest.mark.parametrize("value", ["", " ", "\t\n", "\u00a0", "\u2003\r\n"])
 def test_empty_or_whitespace_username_and_narrative(value: str) -> None:
-    response = single(make_record(username=value, narrative=value, annotations={}))
+    response = single(with_user_annotations(username=value, narrative=value, annotations={}))
     assert issues_of(response) == [("/username", "EMPTY_VALUE"), ("/narrative", "EMPTY_VALUE")]
     assert response.json()["records"][0]["narrative_code_points"] == len(value)
 
@@ -435,18 +454,18 @@ def test_username_profile_accepts(username: str) -> None:
 
 def test_sparse_and_empty_annotation_maps_pass() -> None:
     assert post_single(example_bytes("empty-annotations.json")).status == 200
-    sparse = make_record(annotations={"AE": [{"text": "nausea", "start": 15, "end": 21}]})
+    sparse = with_user_annotations(annotations={"AE": [{"text": "nausea", "start": 15, "end": 21}]})
     response = single(sparse)
     assert response.status == 200
-    assert response.json()["records"][0]["annotations_by_label"] == {"AE": 1}
+    assert user_counts(response.json()["records"][0]) == {"AE": 1}
 
 
 @pytest.mark.parametrize("label", ["ae", "SDRUG", "Unknown", "AE ", ""])
 def test_unknown_labels_fail_even_with_empty_arrays(label: str) -> None:
     record = make_record()
-    record["annotations"][label] = []
+    user_map(record)[label] = []
     response = single(record)
-    pointer = "/annotations/" + label.replace("~", "~0").replace("/", "~1")
+    pointer = "/annotation_sets/user/annotations/" + label.replace("~", "~0").replace("/", "~1")
     assert issues_of(response) == [(pointer, "UNKNOWN_LABEL")]
     assert response.json()["records"][0]["annotation_count"] is None
 
@@ -472,7 +491,7 @@ def test_minimal_record_passes() -> None:
     assert observation["case_id"] == "12345678-1"
     assert observation["offset_unit"] == "unicode-code-point"
     assert observation["annotation_count"] == 0
-    assert observation["annotations_by_label"] == {}
+    assert observation["annotation_sets"] == {}
     assert response.json()["foreign_fields"] == []
 
 
@@ -485,7 +504,7 @@ def test_minimal_record_echo_is_unchanged() -> None:
 
 
 def test_absent_offset_unit_uses_code_points_for_annotations() -> None:
-    record = make_record(
+    record = with_user_annotations(
         narrative="A\U0001f600 rash", annotations={"AE": [{"text": "rash", "start": 3, "end": 7}]}
     )
     response = single(record)
@@ -542,12 +561,12 @@ def test_unicode_crlf_fixture_offsets() -> None:
     body = response.json()
     assert body["records"][0]["narrative_code_points"] == 7
     assert body["echo"]["narrative"] == "A\U0001f600é\r\nB"
-    assert body["records"][0]["annotations_by_label"] == {"Status": 4}
+    assert user_counts(body["records"][0]) == {"Status": 4}
 
 
 def test_utf16_coordinates_are_not_corrected() -> None:
     narrative = "A\U0001f600B"
-    record = make_record(
+    record = with_user_annotations(
         narrative=narrative,
         annotations={
             "AE": [{"text": "B", "start": 3, "end": 4}],
@@ -556,8 +575,8 @@ def test_utf16_coordinates_are_not_corrected() -> None:
     )
     response = single(record)
     assert issues_of(response) == [
-        ("/annotations/AE/0", "INVALID_RANGE"),
-        ("/annotations/Dx/0/text", "TEXT_MISMATCH"),
+        ("/annotation_sets/user/annotations/AE/0", "INVALID_RANGE"),
+        ("/annotation_sets/user/annotations/Dx/0/text", "TEXT_MISMATCH"),
     ]
 
 
@@ -575,7 +594,7 @@ def test_utf16_coordinates_are_not_corrected() -> None:
     ],
 )
 def test_exact_decoded_slices(narrative: str, text: str, start: int, end: int) -> None:
-    record = make_record(
+    record = with_user_annotations(
         narrative=narrative, annotations={"AE": [{"text": text, "start": start, "end": end}]}
     )
     raw = dumps(record)
@@ -586,18 +605,18 @@ def test_exact_decoded_slices(narrative: str, text: str, start: int, end: int) -
 
 
 def test_composed_and_decomposed_forms_are_not_normalized() -> None:
-    record = make_record(
+    record = with_user_annotations(
         narrative="café", annotations={"AE": [{"text": "café", "start": 0, "end": 4}]}
     )
     response = single(record)
-    assert issues_of(response) == [("/annotations/AE/0/text", "TEXT_MISMATCH")]
+    assert issues_of(response) == [("/annotation_sets/user/annotations/AE/0/text", "TEXT_MISMATCH")]
 
 
 def test_escaped_surrogate_pair_is_one_code_point() -> None:
     raw = (
         b'{"case_id":"1-1","username":"u","narrative":"x\\ud83d\\ude00",'
-        b'"offset_unit":"unicode-code-point","annotations":{"AE":[{"text":"\\ud83d\\ude00",'
-        b'"start":1,"end":2}]}}'
+        b'"offset_unit":"unicode-code-point",'
+        b'"annotation_sets":{"user":{"kind":"user","annotations":{"AE":[{"text":"\\ud83d\\ude00","start":1,"end":2}]}}}}'
     )
     response = post_single(raw)
     assert response.status == 200
@@ -613,9 +632,9 @@ def test_escaped_surrogate_pair_is_one_code_point() -> None:
 )
 def test_invalid_ranges_skip_quotes(start: int, end: int) -> None:
     record = make_record()
-    record["annotations"]["SDrug"][0].update(start=start, end=end)
+    user_map(record)["SDrug"][0].update(start=start, end=end)
     response = single(record)
-    assert issues_of(response) == [("/annotations/SDrug/0", "INVALID_RANGE")]
+    assert issues_of(response) == [("/annotation_sets/user/annotations/SDrug/0", "INVALID_RANGE")]
     assert checks_of(response) == with_checks(offset_ranges="failed", text_matches="skipped")
 
 
@@ -624,22 +643,26 @@ def test_invalid_ranges_skip_quotes(start: int, end: int) -> None:
 )
 def test_quote_mismatches(text: str) -> None:
     record = make_record()
-    record["annotations"]["SDrug"][0]["text"] = text
+    user_map(record)["SDrug"][0]["text"] = text
     response = single(record)
-    assert issues_of(response) == [("/annotations/SDrug/0/text", "TEXT_MISMATCH")]
+    assert issues_of(response) == [
+        ("/annotation_sets/user/annotations/SDrug/0/text", "TEXT_MISMATCH")
+    ]
     assert checks_of(response) == with_checks(text_matches="failed")
 
 
 def test_full_narrative_range_and_empty_narrative_range() -> None:
-    record = make_record(
+    record = with_user_annotations(
         annotations={"Dx": [{"text": "Aspirin caused nausea.", "start": 0, "end": 22}]}
     )
     assert single(record).status == 200
-    empty = make_record(narrative="", annotations={"Dx": [{"text": "", "start": 0, "end": 0}]})
+    empty = with_user_annotations(
+        narrative="", annotations={"Dx": [{"text": "", "start": 0, "end": 0}]}
+    )
     response = single(empty)
     assert issues_of(response) == [
         ("/narrative", "EMPTY_VALUE"),
-        ("/annotations/Dx/0", "INVALID_RANGE"),
+        ("/annotation_sets/user/annotations/Dx/0", "INVALID_RANGE"),
     ]
 
 
@@ -655,7 +678,7 @@ def test_repeated_text_and_overlaps_pass() -> None:
 def test_repeated_tuple_fails_for_each_later_occurrence_even_with_other_metadata() -> None:
     narrative = "Aspirin and Aspirin."
     entry = {"text": "Aspirin", "start": 12, "end": 19}
-    record = make_record(
+    record = with_user_annotations(
         narrative=narrative,
         annotations={
             "SDrug": [
@@ -669,14 +692,14 @@ def test_repeated_tuple_fails_for_each_later_occurrence_even_with_other_metadata
     )
     response = single(record)
     assert issues_of(response) == [
-        ("/annotations/SDrug/2", "DUPLICATE_ANNOTATION"),
-        ("/annotations/SDrug/3", "DUPLICATE_ANNOTATION"),
+        ("/annotation_sets/user/annotations/SDrug/2", "DUPLICATE_ANNOTATION"),
+        ("/annotation_sets/user/annotations/SDrug/3", "DUPLICATE_ANNOTATION"),
     ]
     assert response.json()["records"][0]["issue_count"] == 2
 
 
 def test_different_quote_at_same_span_is_mismatch_not_duplicate() -> None:
-    record = make_record(
+    record = with_user_annotations(
         narrative="Aspirin and Aspirin.",
         annotations={
             "SDrug": [
@@ -686,7 +709,9 @@ def test_different_quote_at_same_span_is_mismatch_not_duplicate() -> None:
         },
     )
     response = single(record)
-    assert issues_of(response) == [("/annotations/SDrug/1/text", "TEXT_MISMATCH")]
+    assert issues_of(response) == [
+        ("/annotation_sets/user/annotations/SDrug/1/text", "TEXT_MISMATCH")
+    ]
     assert checks_of(response)["annotation_duplicates"] == "passed"
 
 
@@ -695,7 +720,7 @@ def test_missing_wrong_or_unsupported_text_blocks_duplicate_check(bad_text: Any)
     second: dict[str, Any] = {"start": 0, "end": 7}
     if bad_text is not MISSING:
         second["text"] = bad_text
-    record = make_record(
+    record = with_user_annotations(
         annotations={"SDrug": [{"text": "Aspirin", "start": 0, "end": 7}, second, second]}
     )
     response = single(record)
@@ -705,11 +730,11 @@ def test_missing_wrong_or_unsupported_text_blocks_duplicate_check(bad_text: Any)
 
 def test_duplicates_independent_of_range_and_quote_validity() -> None:
     bad = {"text": "zzz", "start": 50, "end": 53}
-    response = single(make_record(annotations={"AE": [bad, dict(bad)]}))
+    response = single(with_user_annotations(annotations={"AE": [bad, dict(bad)]}))
     assert issues_of(response) == [
-        ("/annotations/AE/0", "INVALID_RANGE"),
-        ("/annotations/AE/1", "INVALID_RANGE"),
-        ("/annotations/AE/1", "DUPLICATE_ANNOTATION"),
+        ("/annotation_sets/user/annotations/AE/0", "INVALID_RANGE"),
+        ("/annotation_sets/user/annotations/AE/1", "INVALID_RANGE"),
+        ("/annotation_sets/user/annotations/AE/1", "DUPLICATE_ANNOTATION"),
     ]
 
 
@@ -721,7 +746,7 @@ def test_no_cross_record_annotation_duplicates() -> None:
 
 def test_unknown_label_items_still_get_structure_and_range_checks() -> None:
     record = make_record()
-    record["annotations"]["Mystery"] = [
+    user_map(record)["Mystery"] = [
         {"text": "Aspirin", "start": 0, "end": 7},
         {"text": "Aspirin", "start": 0, "end": 7},
         {"text": "nope", "start": 0, "end": 4},
@@ -729,10 +754,10 @@ def test_unknown_label_items_still_get_structure_and_range_checks() -> None:
     ]
     response = single(record)
     assert issues_of(response) == [
-        ("/annotations/Mystery/3/text", "REQUIRED_FIELD"),
-        ("/annotations/Mystery", "UNKNOWN_LABEL"),
-        ("/annotations/Mystery/3", "INVALID_RANGE"),
-        ("/annotations/Mystery/2/text", "TEXT_MISMATCH"),
+        ("/annotation_sets/user/annotations/Mystery/3/text", "REQUIRED_FIELD"),
+        ("/annotation_sets/user/annotations/Mystery", "UNKNOWN_LABEL"),
+        ("/annotation_sets/user/annotations/Mystery/3", "INVALID_RANGE"),
+        ("/annotation_sets/user/annotations/Mystery/2/text", "TEXT_MISMATCH"),
     ]
     assert checks_of(response)["annotation_duplicates"] == "skipped"
 
@@ -742,11 +767,11 @@ def test_unknown_label_items_still_get_structure_and_range_checks() -> None:
 
 def test_unsupported_unicode_in_narrative_quote_and_metadata() -> None:
     record = make_record(narrative="Aspirin\u0000 nausea.")
-    record["annotations"]["AE"][0]["text"] = "\udc00"
+    user_map(record)["AE"][0]["text"] = "\udc00"
     record["source_metadata"]["tags"][1] = "x\ud800y"
     response = single(record)
     assert issues_of(response) == [
-        ("/annotations/AE/0/text", "UNSUPPORTED_UNICODE"),
+        ("/annotation_sets/user/annotations/AE/0/text", "UNSUPPORTED_UNICODE"),
         ("/narrative", "UNSUPPORTED_UNICODE"),
         ("/source_metadata/tags/1", "UNSUPPORTED_UNICODE"),
     ]
@@ -787,7 +812,7 @@ def test_unsupported_names_fall_back_to_enclosing_object() -> None:
     assert [f["path"] for f in body["foreign_fields"]] == [
         "/meta",
         "/source_metadata",
-        "/annotations/SDrug/0/external_id",
+        "/annotation_sets/user/annotations/SDrug/0/external_id",
     ]
     assert body["omitted_foreign_field_count"] == 1
 
@@ -795,11 +820,11 @@ def test_unsupported_names_fall_back_to_enclosing_object() -> None:
 def test_unsupported_label_name_is_reported_once() -> None:
     raw = (
         b'{"case_id":"1-1","username":"u","narrative":"abc",'
-        b'"offset_unit":"unicode-code-point","annotations":{"\\ud800":[{"text":"a","start":0,'
-        b'"end":1,"m":1}]}}'
+        b'"offset_unit":"unicode-code-point",'
+        b'"annotation_sets":{"user":{"kind":"user","annotations":{"\\ud800":[{"text":"a","start":0,"end":1,"m":1}]}}}}'
     )
     response = post_single(raw)
-    assert issues_of(response) == [("/annotations", "UNSUPPORTED_UNICODE")]
+    assert issues_of(response) == [("/annotation_sets/user/annotations", "UNSUPPORTED_UNICODE")]
     checks = checks_of(response)
     assert checks["label_membership"] == "skipped"
     assert checks["annotation_duplicates"] == "skipped"
@@ -831,10 +856,10 @@ def test_non_object_record_json_values_still_evaluated() -> None:
 
 def test_missing_narrative_skips_ranges_but_checks_duplicates() -> None:
     annotations = {"AE": [{"text": "a", "start": 0, "end": 1}, {"text": "a", "start": 0, "end": 1}]}
-    response = single(make_record(narrative=MISSING, annotations=annotations))
+    response = single(with_user_annotations(narrative=MISSING, annotations=annotations))
     assert issues_of(response) == [
         ("/narrative", "REQUIRED_FIELD"),
-        ("/annotations/AE/1", "DUPLICATE_ANNOTATION"),
+        ("/annotation_sets/user/annotations/AE/1", "DUPLICATE_ANNOTATION"),
     ]
     assert checks_of(response) == with_checks(
         required_fields="failed",
@@ -848,7 +873,7 @@ def test_missing_narrative_skips_ranges_but_checks_duplicates() -> None:
 
 def test_wrong_offset_unit_skips_ranges_and_text() -> None:
     record = make_record(offset_unit="utf-16")
-    record["annotations"]["AE"][0]["text"] = "wrong"
+    user_map(record)["AE"][0]["text"] = "wrong"
     response = single(record)
     assert issues_of(response) == [("/offset_unit", "INVALID_OFFSET_UNIT")]
     assert checks_of(response) == with_checks(
@@ -858,14 +883,14 @@ def test_wrong_offset_unit_skips_ranges_and_text() -> None:
 
 def test_malformed_array_does_not_suppress_other_labels_and_failed_beats_skipped() -> None:
     record = make_record()
-    record["annotations"]["AE"] = None
-    record["annotations"]["SDrug"][0]["text"] = "aspirin"
-    record["annotations"]["Dx"] = [{"text": "x", "start": 30, "end": 31}]
+    user_map(record)["AE"] = None
+    user_map(record)["SDrug"][0]["text"] = "aspirin"
+    user_map(record)["Dx"] = [{"text": "x", "start": 30, "end": 31}]
     response = single(record)
     assert issues_of(response) == [
-        ("/annotations/AE", "INVALID_TYPE"),
-        ("/annotations/Dx/0", "INVALID_RANGE"),
-        ("/annotations/SDrug/0/text", "TEXT_MISMATCH"),
+        ("/annotation_sets/user/annotations/AE", "INVALID_TYPE"),
+        ("/annotation_sets/user/annotations/Dx/0", "INVALID_RANGE"),
+        ("/annotation_sets/user/annotations/SDrug/0/text", "TEXT_MISMATCH"),
     ]
     checks = checks_of(response)
     assert checks["offset_ranges"] == "failed"
@@ -874,26 +899,26 @@ def test_malformed_array_does_not_suppress_other_labels_and_failed_beats_skipped
 
 
 def test_empty_map_passes_annotation_checks_even_when_other_fields_fail() -> None:
-    response = single(make_record(narrative=MISSING, offset_unit=5, annotations={}))
+    response = single(with_user_annotations(narrative=MISSING, offset_unit=5, annotations={}))
     checks = checks_of(response)
     for name in ("label_membership", "offset_ranges", "text_matches", "annotation_duplicates"):
         assert checks[name] == "passed"
     assert response.json()["records"][0]["annotation_count"] == 0
-    assert response.json()["records"][0]["annotations_by_label"] == {}
+    assert user_counts(response.json()["records"][0]) == {}
 
 
 def test_missing_map_is_zero_annotations() -> None:
     # A narrative without annotations is the default submission (spec rev 0.4).
-    response = single(make_record(annotations=MISSING))
+    response = single(make_record(annotation_sets=MISSING))
     assert response.status == 200
     assert checks_of(response) == ALL_PASSED
     observation = response.json()["records"][0]
     assert observation["annotation_count"] == 0
-    assert observation["annotations_by_label"] == {}
+    assert observation["annotation_sets"] == {}
 
 
 def test_missing_map_passes_annotation_checks_even_when_other_fields_fail() -> None:
-    response = single(make_record(annotations=MISSING, narrative=MISSING, offset_unit=5))
+    response = single(make_record(annotation_sets=MISSING, narrative=MISSING, offset_unit=5))
     checks = checks_of(response)
     for name in ("label_membership", "offset_ranges", "text_matches", "annotation_duplicates"):
         assert checks[name] == "passed"
@@ -904,23 +929,24 @@ def test_missing_map_passes_annotation_checks_even_when_other_fields_fail() -> N
 
 def test_counts_include_malformed_slots_and_skip_zero_labels() -> None:
     record = make_record()
-    record["annotations"]["AE"] = [5, {"text": 1}, {"text": "nausea", "start": 15, "end": 21}]
-    record["annotations"]["Dx"] = []
+    user_map(record)["AE"] = [5, {"text": 1}, {"text": "nausea", "start": 15, "end": 21}]
+    user_map(record)["Dx"] = []
     response = single(record)
     observation = response.json()["records"][0]
     assert observation["annotation_count"] == 4
-    assert observation["annotations_by_label"] == {"SDrug": 1, "AE": 3}
-    assert list(observation["annotations_by_label"]) == ["SDrug", "AE"]
+    assert user_counts(observation) == {"SDrug": 1, "AE": 3}
+    assert list(user_counts(observation)) == ["SDrug", "AE"]
 
 
 def test_canonical_label_order_in_counts_regardless_of_input_order() -> None:
     raw = (
         b'{"case_id":"1-1","username":"u","narrative":"abc",'
-        b'"offset_unit":"unicode-code-point","annotations":{"Temporal":[{"text":"a","start":0,'
-        b'"end":1}],"SDrug":[{"text":"b","start":1,"end":2}],"Age":[{"text":"c","start":2,"end":3}]}}'
+        b'"offset_unit":"unicode-code-point","annotation_sets":{"user":{"kind":"user","annotations":{"Temporal":[{"text":"a",'
+        b'"start":0,"end":1}],"SDrug":[{"text":"b","start":1,"end":2}],'
+        b'"Age":[{"text":"c","start":2,"end":3}]}}}}'
     )
     observation = post_single(raw).json()["records"][0]
-    assert list(observation["annotations_by_label"]) == ["SDrug", "Age", "Temporal"]
+    assert list(user_counts(observation)) == ["SDrug", "Age", "Temporal"]
 
 
 def test_identity_fields_validate_independently() -> None:
@@ -943,15 +969,24 @@ def test_identity_fields_validate_independently() -> None:
     [
         (
             '"AE": [1e400]',
-            [("/annotations/AE/0", "UNSAFE_NUMBER"), ("/annotations/AE/0", "INVALID_TYPE")],
+            [
+                ("/annotation_sets/user/annotations/AE/0", "UNSAFE_NUMBER"),
+                ("/annotation_sets/user/annotations/AE/0", "INVALID_TYPE"),
+            ],
         ),
         (
             '"AE": "\\u0000"',
-            [("/annotations/AE", "UNSUPPORTED_UNICODE"), ("/annotations/AE", "INVALID_TYPE")],
+            [
+                ("/annotation_sets/user/annotations/AE", "UNSUPPORTED_UNICODE"),
+                ("/annotation_sets/user/annotations/AE", "INVALID_TYPE"),
+            ],
         ),
         (
             '"AE": 1e400',
-            [("/annotations/AE", "UNSAFE_NUMBER"), ("/annotations/AE", "INVALID_TYPE")],
+            [
+                ("/annotation_sets/user/annotations/AE", "UNSAFE_NUMBER"),
+                ("/annotation_sets/user/annotations/AE", "INVALID_TYPE"),
+            ],
         ),
     ],
 )
@@ -960,7 +995,8 @@ def test_rejected_scalar_in_container_slot_still_fails_shape(
 ) -> None:
     raw = (
         b'{"case_id":"1-1","username":"u","narrative":"abc",'
-        b'"offset_unit":"unicode-code-point","annotations":{' + fragment.encode() + b"}}"
+        b'"offset_unit":"unicode-code-point",'
+        b'"annotation_sets":{"user":{"kind":"user","annotations":{' + fragment.encode() + b"}}}}"
     )
     response = post_single(raw)
     assert issues_of(response) == expected
@@ -970,11 +1006,16 @@ def test_rejected_scalar_in_container_slot_still_fails_shape(
 def test_rejected_scalar_as_annotations_map_or_record_still_fails_shape() -> None:
     raw = (
         b'{"case_id":"1-1","username":"u","narrative":"abc",'
-        b'"offset_unit":"unicode-code-point","annotations":1e400}'
+        b'"offset_unit":"unicode-code-point","annotation_sets":{"user":{"kind":"user","annotations":1e400}}}'
     )
     assert issues_of(post_single(raw)) == [
-        ("/annotations", "UNSAFE_NUMBER"),
-        ("/annotations", "INVALID_TYPE"),
+        ("/annotation_sets/user/annotations", "UNSAFE_NUMBER"),
+        ("/annotation_sets/user/annotations", "INVALID_TYPE"),
+    ]
+    sets = b'{"case_id":"1-1","username":"u","narrative":"abc","annotation_sets":1e400}'
+    assert issues_of(post_single(sets)) == [
+        ("/annotation_sets", "UNSAFE_NUMBER"),
+        ("/annotation_sets", "INVALID_TYPE"),
     ]
     assert issues_of(post_batch(b'{"records":[1e400]}')) == [
         ("/records/0", "UNSAFE_NUMBER"),
@@ -985,12 +1026,12 @@ def test_rejected_scalar_as_annotations_map_or_record_still_fails_shape() -> Non
 def test_forbidden_label_with_non_array_value() -> None:
     raw = (
         b'{"case_id":"1-1","username":"u","narrative":"abc",'
-        b'"offset_unit":"unicode-code-point","annotations":{"AE\\ud800":5}}'
+        b'"offset_unit":"unicode-code-point","annotation_sets":{"user":{"kind":"user","annotations":{"AE\\ud800":5}}}}'
     )
     issues = post_single(raw).json()["issues"]
     assert [(i["path"], i["code"]) for i in issues] == [
-        ("/annotations", "UNSUPPORTED_UNICODE"),
-        ("/annotations", "INVALID_TYPE"),
+        ("/annotation_sets/user/annotations", "UNSUPPORTED_UNICODE"),
+        ("/annotation_sets/user/annotations", "INVALID_TYPE"),
     ]
     assert issues[1]["message"].endswith("contains an unsupported object property name.")
 

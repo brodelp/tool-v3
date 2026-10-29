@@ -5,12 +5,16 @@ document the wire contract in OpenAPI, and the field adapters enforce owned-fiel
 runtime. Responses are TypedDicts so optional members are omitted rather than set to null.
 """
 
+import re
+from datetime import datetime
 from typing import Annotated, Any, Final, Literal, NotRequired, TypedDict, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from scat_validator.config import (
     LABELS,
+    LLM_SET_PREFIX,
+    MAX_ANNOTATION_SETS,
     MAX_BATCH_RECORDS,
     MAX_CASE_ID_CHARS,
     MAX_ISSUES,
@@ -18,7 +22,11 @@ from scat_validator.config import (
     MAX_SAFE_NUMBER,
     MAX_USERNAME_CHARS,
     MIN_BATCH_RECORDS,
+    MODEL_PATTERN,
     OFFSET_UNIT,
+    PROVIDER_PATTERN,
+    SET_KINDS,
+    USER_SET_ID,
 )
 
 # ---------------------------------------------------------------- shared strict field types
@@ -114,6 +122,51 @@ def is_valid_offset_unit(value: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------- annotation sets (stage 4 §2.2)
+
+
+def _unanchored(pattern: str) -> str:
+    return pattern.removeprefix("^").removesuffix("$")
+
+
+SET_ID_PATTERN: Final = (
+    f"^({USER_SET_ID}|{LLM_SET_PREFIX}{_unanchored(PROVIDER_PATTERN)}:"
+    f"{_unanchored(MODEL_PATTERN)})$"
+)
+GENERATED_AT_PATTERN: Final = (
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$"
+)
+_SET_ID: Final = re.compile(SET_ID_PATTERN)
+_GENERATED_AT: Final = re.compile(GENERATED_AT_PATTERN)
+
+SetKind = Literal["user", "llm"]
+assert get_args(SetKind) == SET_KINDS
+
+
+def is_valid_set_id(value: str) -> bool:
+    """``user`` or ``llm:<provider>:<model>``, matched against the whole value."""
+    return _SET_ID.fullmatch(value) is not None
+
+
+def split_set_id(value: str) -> tuple[str, str] | None:
+    """``(provider, model)`` of a valid llm set id, split at its first two colons; else None."""
+    if value == USER_SET_ID or not is_valid_set_id(value):
+        return None
+    _, provider, model = value.split(":", 2)
+    return provider, model
+
+
+def is_valid_generated_at(value: str) -> bool:
+    """RFC 3339 UTC ``YYYY-MM-DDTHH:MM:SS[.f{1,6}]Z`` naming a real calendar date and time."""
+    if _GENERATED_AT.fullmatch(value) is None:
+        return False
+    try:
+        datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return False
+    return True
+
+
 # ---------------------------------------------------------------- request schemas (documentation)
 
 _METADATA_NOTE: Final = (
@@ -146,9 +199,84 @@ AnnotationMap.__doc__ = (
 )
 
 
+class AnnotationSet(TypedDict):
+    """One annotation set. `kind` agrees with the set id; an `llm` set also carries its
+    provenance, which must match the id. On a `user` set, `provider`, `model`, and
+    `generated_at` are foreign metadata."""
+
+    kind: SetKind
+    annotations: AnnotationMap
+    # Unconstrained in the schema: on a user set these are foreign metadata of any type, so the
+    # llm-only rules are stated in the descriptions and enforced at runtime.
+    provider: NotRequired[
+        Annotated[
+            Any,
+            Field(
+                description=(
+                    "Required on an llm set: a string equal to the id's provider "
+                    f"(`{PROVIDER_PATTERN}`). Foreign metadata on a user set."
+                )
+            ),
+        ]
+    ]
+    model: NotRequired[
+        Annotated[
+            Any,
+            Field(
+                description=(
+                    "Required on an llm set: a string equal to the id's model "
+                    f"(`{MODEL_PATTERN}`). Foreign metadata on a user set."
+                )
+            ),
+        ]
+    ]
+    generated_at: NotRequired[
+        Annotated[
+            Any,
+            Field(
+                description=(
+                    "Required on an llm set: an RFC 3339 UTC timestamp "
+                    "`YYYY-MM-DDTHH:MM:SS[.f{1,6}]Z` naming a real date and time. Foreign "
+                    "metadata on a user set."
+                ),
+                examples=["2026-10-29T14:05:09Z"],
+            ),
+        ]
+    ]
+
+
+AnnotationSet.__pydantic_config__ = ConfigDict(  # type: ignore[attr-defined]
+    extra="allow", strict=True, json_schema_extra={"x-note": _METADATA_NOTE}
+)
+
+
+def _set_ids_as_property_names(schema: dict[str, Any]) -> None:
+    """Every key must be a set id: ``propertyNames``, not the open ``patternProperties``."""
+    ((pattern, set_schema),) = schema.pop("patternProperties").items()
+    schema["propertyNames"] = {"pattern": pattern}
+    schema["additionalProperties"] = set_schema
+
+
+SetId = Annotated[str, Field(pattern=SET_ID_PATTERN)]
+AnnotationSets = Annotated[
+    dict[SetId, AnnotationSet],
+    Field(
+        max_length=MAX_ANNOTATION_SETS,
+        json_schema_extra=_set_ids_as_property_names,
+        description=(
+            "Optional annotation sets by source: `user` and `llm:<provider>:<model>` (split at "
+            "the first two colons). Absent means zero annotations; `{}` is valid; explicit null "
+            "is a type error. Every annotation check, including duplicates, is scoped to one set."
+        ),
+    ),
+]
+
+
 class Record(BaseModel):
     """A case record. Three required and two optional owned properties; every other property
-    is foreign metadata. The default submission is a narrative without annotations."""
+    is foreign metadata, except a top-level `annotations` member, which is rejected
+    (`SUPERSEDED_FIELD`; use `annotation_sets.user.annotations`). The default submission is a
+    narrative without annotations."""
 
     model_config = ConfigDict(
         extra="allow", strict=True, json_schema_extra={"x-note": _METADATA_NOTE}
@@ -165,13 +293,7 @@ class Record(BaseModel):
             "an absent value is not inserted into the source or echo."
         ),
     )
-    annotations: AnnotationMap = Field(
-        default_factory=dict,
-        description=(
-            "Optional pre-existing annotations. Absent means zero annotations; explicit null is "
-            "a type error."
-        ),
-    )
+    annotation_sets: AnnotationSets = Field(default_factory=dict)
 
 
 class BatchEnvelope(BaseModel):
@@ -183,8 +305,9 @@ class BatchEnvelope(BaseModel):
 
 
 class AnnotationsUpdate(BaseModel):
-    """Closed annotation-update body (stage 3). The map replaces the stored record's
-    `annotations` value byte for byte and is validated against the stored narrative."""
+    """Closed user-set update body (stage 3, stage 4 §4.2). The map replaces the `annotations`
+    value of the stored record's `user` annotation set byte for byte (the set is created when
+    absent) and is validated against the stored narrative."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -219,6 +342,11 @@ type IssueCode = Literal[
     "UNKNOWN_QUERY_PARAMETER",
     "INVALID_JSON",
     "DUPLICATE_PROPERTY",
+    "SUPERSEDED_FIELD",
+    "INVALID_SET_ID",
+    "INVALID_SET_KIND",
+    "SET_ID_MISMATCH",
+    "INVALID_TIMESTAMP",
 ]
 type ErrorCode = Literal[
     "INVALID_JSON",
@@ -295,6 +423,26 @@ AnnotationCounts.__pydantic_config__ = ConfigDict(extra="forbid")
 AnnotationCounts.__doc__ = "Known labels with nonzero supplied entries, in canonical order."
 
 
+class SetObservation(TypedDict):
+    """Counts for one annotation set, as stage 1 §6.3 counts a record's map."""
+
+    kind: Annotated[
+        SetKind | None, Field(description="The set's `kind` when it is `user` or `llm`.")
+    ]
+    annotation_count: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Supplied entries (including malformed ones) when the set's map is an object "
+                "with only known labels whose values are all arrays; otherwise null."
+            )
+        ),
+    ]
+    annotations_by_label: Annotated[
+        AnnotationCounts | None, Field(description="Null under the same conditions as the count.")
+    ]
+
+
 class RecordObservation(TypedDict):
     """What the service understood about one record slot. Nulls mean "not observable"."""
 
@@ -325,13 +473,20 @@ class RecordObservation(TypedDict):
         int | None,
         Field(
             description=(
-                "Supplied entries (including malformed ones) when the map is an object with "
-                "only known labels whose values are all arrays; otherwise null."
+                "Sum of the set counts: 0 when `annotation_sets` is absent; null when it is not "
+                "an object, has more than 16 sets or an invalid set id, or any set count is null."
             )
         ),
     ]
-    annotations_by_label: Annotated[
-        AnnotationCounts | None, Field(description="Null under the same conditions as the count.")
+    annotation_sets: Annotated[
+        dict[str, SetObservation] | None,
+        Field(
+            description=(
+                "Per-set counts by set id in code-point order: `{}` when `annotation_sets` is "
+                "absent; null when it is not an object, has more than 16 sets, or has an invalid "
+                "set id."
+            )
+        ),
     ]
     checks: Checks
 

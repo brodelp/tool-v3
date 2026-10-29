@@ -22,6 +22,7 @@ from tests.conftest import alembic_config
 from tests.helpers import (
     MISSING,
     RawResponse,
+    annotation_sets_fixture,
     call,
     delete,
     dumps,
@@ -29,7 +30,6 @@ from tests.helpers import (
     export,
     make_record,
     post_single,
-    raw_fixture,
     submit,
     username_query,
 )
@@ -148,7 +148,7 @@ def test_repeated_pair_is_409_and_original_is_kept(storage: Storage) -> None:
     first = record_bytes(case_id="7-1")
     assert submit(first).status == 201
     response = submit(
-        record_bytes(case_id="7-1", narrative="A different narrative.", annotations=MISSING)
+        record_bytes(case_id="7-1", narrative="A different narrative.", annotation_sets=MISSING)
     )
     assert response.status == 409
     assert error_code(response) == "ALREADY_SUBMITTED"
@@ -222,7 +222,7 @@ def test_export_keeps_escapes_and_inner_whitespace(storage: Storage) -> None:
 
 
 def test_bom_is_not_stored_or_exported(storage: Storage) -> None:
-    raw = raw_fixture("bom-record.json")
+    raw = annotation_sets_fixture("bom-record.json")
     assert raw.startswith(b"\xef\xbb\xbf")
     receipt = submit(raw)
     assert receipt.status == 201
@@ -263,7 +263,7 @@ def test_resubmission_after_delete_is_allowed(storage: Storage) -> None:
     assert delete("6-1", DEMO_QUERY).status == 204
     assert (
         submit(
-            record_bytes(case_id="6-1", narrative="Revised narrative.", annotations=MISSING)
+            record_bytes(case_id="6-1", narrative="Revised narrative.", annotation_sets=MISSING)
         ).status
         == 201
     )
@@ -389,7 +389,7 @@ def test_identities_and_values_never_logged(
     caplog.set_level(logging.DEBUG)
     case_id, username = "SECRETCASE-7", "secret_user"
     body = record_bytes(
-        case_id=case_id, username=username, narrative="SECRET NARRATIVE", annotations=MISSING
+        case_id=case_id, username=username, narrative="SECRET NARRATIVE", annotation_sets=MISSING
     )
     query = username_query(username)
     assert submit(body).status == 201

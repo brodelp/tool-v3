@@ -69,7 +69,7 @@ Each record is a JSON object with three required and two optional owned properti
 | `username` | Required | String of 1–255 characters matching the username/email profile below. Preserve the accepted value and its case exactly. |
 | `narrative` | Required | String containing at least one non-whitespace code point. Preserve the decoded string exactly. |
 | `offset_unit` | Optional | When supplied, exactly the string `unicode-code-point`; no aliases or case variants. When absent, offsets are Unicode code points. The absent value is not inserted into the source or echo. |
-| `annotations` | Optional | Object mapping configured label names to arrays of annotation objects. `{}` is valid. When absent, the record has zero annotations and nothing is inserted into the source or echo. |
+| `annotation_sets` | Optional | Object of annotation sets keyed by set id (`user`, `llm:<provider>:<model>`), each holding an `annotations` map of configured label names to arrays of annotation objects. The record shape is defined in stage 4 §2 (revision 0.5); a top-level `annotations` member is rejected with `SUPERSEDED_FIELD`. When absent, the record has zero annotations and nothing is inserted into the source or echo. |
 
 **Username profile.** There is no universal username grammar. Use this explicit, conventional ASCII profile for stage 1:
 
@@ -104,7 +104,7 @@ Every element of a label array must be an object with:
 
 Require `0 <= start < end <= len(narrative)` and `text == narrative[start:end]`. These operations use unchanged decoded Unicode text after the Unicode restrictions in §4 pass. CRLF occupies two code points; a combining mark counts separately; an emoji outside the BMP occupies one. These are not byte, UTF-16 code-unit, or grapheme-cluster offsets. Never search for another occurrence or repair a quote/range.
 
-Within each record, reject every occurrence after the first of a `(label, text, start, end)` tuple, even if extra properties differ. Use a set, not pairwise comparisons. Duplicate checking requires a known label, a Unicode-compatible string `text`, and correctly typed, safe offsets; it does not depend on the text matching the narrative or on range validity. Different text makes a different tuple, although an incorrect quote still fails `text_matches`. Same-range different-label, repeated words at different positions, nested/crossing spans, and adjacent spans are valid when their own checks pass. Do not detect annotation duplicates across records.
+Within each annotation set of a record (duplicates are scoped per set; see stage 4 §2), reject every occurrence after the first of a `(label, text, start, end)` tuple, even if extra properties differ. Use a set, not pairwise comparisons. Duplicate checking requires a known label, a Unicode-compatible string `text`, and correctly typed, safe offsets; it does not depend on the text matching the narrative or on range validity. Different text makes a different tuple, although an incorrect quote still fails `text_matches`. Same-range different-label, repeated words at different positions, nested/crossing spans, and adjacent spans are valid when their own checks pass. Do not detect annotation duplicates across records.
 
 #### 3.4 Batch envelope
 
@@ -233,7 +233,7 @@ Every observation contains all fields below. Use JSON null where specified, not 
 | `case_id`, `username` | Original value only if that field independently passes its type/value/JSON-compatibility rules; otherwise null. Other invalid fields do not hide valid identity fields. |
 | `narrative_code_points` | `len(narrative)` when it is a Unicode-compatible string, even if empty/whitespace-only; otherwise null. An observation, not a claim of validity. |
 | `offset_unit` | The coordinate unit the service used: `unicode-code-point` when `offset_unit` is absent or valid; null when a supplied value fails its type/value/JSON-compatibility rules, and for a non-object record. This is the export of the offset unit; the echo still omits an absent `offset_unit`. |
-| `annotation_count`, `annotations_by_label` | Counts of supplied array entries when the map is an object, all keys are known, and all values are arrays. Count invalid/non-object entries too. A missing map counts as 0 and `{}`. If any map/key/array condition fails (including an explicit `null` map), both fields are null. |
+| `annotation_count`, `annotation_sets` | (Revision 0.5: `annotation_sets` replaces `annotations_by_label`; see stage 4 §2.4. The text below describes the per-map counting that now applies to each set.) Counts of supplied array entries when the map is an object, all keys are known, and all values are arrays. Count invalid/non-object entries too. A missing map counts as 0 and `{}`. If any map/key/array condition fails (including an explicit `null` map), both fields are null. |
 | `checks` | Exactly the nine statuses in §6.4. |
 
 `annotations_by_label` includes only known labels with nonzero counts, in canonical order. For `{}`, the count is 0 and the map is `{}`. A non-object record has null identity/length/unit/count observations, failed `field_types`, skipped structural/dependent checks, and a separately evaluated `json_values` check.
@@ -386,16 +386,21 @@ HTTP 200 without echo:
 
 With `?echo=true`, additionally return `echo` equal to the input object. Nothing is added: no `offset_unit` and no `annotations` map.
 
-`examples/annotated-record.json` is the same record with pre-existing annotations and still no foreign fields; its report differs only in `annotation_count: 2` and `annotations_by_label: {"SDrug": 1, "AE": 1}`:
+`examples/annotated-record.json` is the same record with pre-existing annotations and still no foreign fields; its report differs only in `annotation_count: 2` and `annotation_sets: {"user": {"kind": "user", "annotation_count": 2, "annotations_by_label": {"SDrug": 1, "AE": 1}}}`:
 
 ```json
 {
   "case_id": "12345678-1",
   "username": "demo_annotator",
   "narrative": "Aspirin caused nausea.",
-  "annotations": {
-    "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
-    "AE": [{"text": "nausea", "start": 15, "end": 21}]
+  "annotation_sets": {
+    "user": {
+      "kind": "user",
+      "annotations": {
+        "SDrug": [{"text": "Aspirin", "start": 0, "end": 7}],
+        "AE": [{"text": "nausea", "start": 15, "end": 21}]
+      }
+    }
   }
 }
 ```
@@ -584,6 +589,10 @@ Technical references checked 16 October 2026 (implementation guidance; the contr
 - [Django username validators](https://docs.djangoproject.com/en/5.2/ref/contrib/auth/#validators), [OWASP input validation](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html), and [email-validator](https://github.com/JoshData/python-email-validator): use explicit username allowlists and a maintained email parser; do not confuse syntax checks with authentication or ownership verification. The ASCII profile is a product restriction, not a universal username standard.
 - [RFC 6901 — JSON Pointer](https://www.rfc-editor.org/rfc/rfc6901): diagnostic path syntax/escaping.
 - [PostgreSQL 18 JSON types](https://www.postgresql.org/docs/18/datatype-json.html): Unicode/JSONB storage context only; stage 1 does not use PostgreSQL.
+
+### Revision 0.5 change record
+
+Stage 4 (`docs/scat-stage-4-llm-annotation-spec.md`) replaces the record's `annotations` member with `annotation_sets` per stage 4 §2: a user set and one read-only set per LLM provider and model, each validated on its own. Sections 3.1, 3.3, 6.3, and 8 are updated accordingly; section numbers are unchanged.
 
 ### 13. Revision 0.4 change record
 

@@ -89,7 +89,7 @@ inserted before the label level.
 #### 2.4 Observation changes (stage 1 §6.3)
 
 `annotations_by_label` is replaced by `annotation_sets`. `annotation_count` remains and is the sum
-over all sets.
+over all sets. When a set id is invalid or there are more than 16 sets, both fields are null, so unbounded ids never enter the report.
 
 ```json
 "annotation_count": 5,
@@ -99,7 +99,7 @@ over all sets.
 }
 ```
 
-Set ids are listed in code-point order. A set's `kind` is the value when it is a valid string,
+Set ids are listed in code-point order. A set's `kind` is the value when it is `"user"` or `"llm"`,
 otherwise null. Its counts follow stage 1 §6.3 for that set's map (null when the map is unusable).
 `annotation_count` is null when any set's count is null. When `annotation_sets` is absent both
 fields are `0` and `{}`; when it is not an object both are null.

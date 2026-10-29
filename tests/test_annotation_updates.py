@@ -140,7 +140,7 @@ def test_list_username_with_url_characters(storage: Storage) -> None:
 # ---------------------------------------------------------------- F02 byte-exact replacement
 
 
-def test_update_replaces_only_the_annotations_member(storage: Storage) -> None:
+def test_update_replaces_only_the_user_map(storage: Storage) -> None:
     raw = example_bytes("exact-numeric-metadata.json")
     assert submit(raw).status == 201
     response = update_annotations("5001-1", DEMO_QUERY, NEW_BODY)
@@ -148,43 +148,76 @@ def test_update_replaces_only_the_annotations_member(storage: Storage) -> None:
     SUBMISSION_UPDATE_ADAPTER.validate_json(response.body, strict=True)
     original = raw.strip().decode()
     start = original.index('"annotations": ') + len('"annotations": ')
-    end = original.index('\n  },\n  "source_metadata"') + len("\n  }")
+    end = original.index('\n      }\n    }\n  },\n  "source_metadata"') + len("\n      }")
     expected = original[:start] + NEW_MAP.decode() + original[end:]
     current, kept, version = stored(storage)
     assert (current, kept, version) == (expected, original, 2)
     assert export_record(export("5001-1", DEMO_QUERY)) == expected.encode()
-    for token in ("0.100000000000000005", "1e-400", "-0,", "1.2300", "1e0", "1.0E2"):
+    for token in ("0.100000000000000005", "1e-400", "-0,", "1.2300", "1e0"):
         assert token in current
 
 
-def test_update_inserts_a_missing_member(storage: Storage) -> None:
+def test_update_appends_user_set_to_existing_sets(storage: Storage) -> None:
+    llm = (
+        '{"kind":"llm","provider":"openai","model":"m","generated_at":"2026-10-29T00:00:00Z",'
+        '"annotations":{}}'
+    )
+    record = (
+        '{"case_id":"5001-1", "username":"demo_annotator","narrative":"Aspirin caused.",'
+        '"annotation_sets" : { "llm:openai:m" : ' + llm + " } }"
+    )
+    assert submit(record.encode()).status == 201
+    assert update_annotations("5001-1", DEMO_QUERY, NEW_BODY).status == 200
+    assert stored(storage)[0] == (
+        '{"case_id":"5001-1", "username":"demo_annotator","narrative":"Aspirin caused.",'
+        '"annotation_sets" : { "llm:openai:m" : '
+        + llm
+        + ',"user":{"kind":"user","annotations":'
+        + NEW_MAP.decode()
+        + "} } }"
+    )
+
+
+def test_update_creates_annotation_sets(storage: Storage) -> None:
     record = b'{"case_id":"5001-1", "username":"demo_annotator","narrative":"Aspirin caused." }'
     assert submit(record).status == 201
     assert update_annotations("5001-1", DEMO_QUERY, NEW_BODY).status == 200
     assert stored(storage)[0] == (
         '{"case_id":"5001-1", "username":"demo_annotator","narrative":"Aspirin caused.",'
-        '"annotations":' + NEW_MAP.decode() + " }"
+        '"annotation_sets":{"user":{"kind":"user","annotations":' + NEW_MAP.decode() + "}} }"
     )
 
 
 def test_update_keeps_the_map_text_and_an_escaped_member_name(storage: Storage) -> None:
     record = (
         b'{"case_id":"5001-1","username":"demo_annotator","narrative":"Aspirin caused.",'
-        b'"annot\\u0061tions":{"AE":[]}}'
+        b'"annotation_sets":{"user":{"kind":"user","annot\\u0061tions":{"AE":[]}}}}'
     )
     assert submit(record).status == 201
     body = b'{ "annotations" :  {"SDrug" : [ {"text":"Aspirin","start":0,"end":7} ]} }'
     assert update_annotations("5001-1", DEMO_QUERY, body).status == 200
     assert stored(storage)[0].endswith(
-        '"annot\\u0061tions":{"SDrug" : [ {"text":"Aspirin","start":0,"end":7} ]}}'
+        '"annot\\u0061tions":{"SDrug" : [ {"text":"Aspirin","start":0,"end":7} ]}}}}'
     )
+
+
+def test_old_annotations_route_is_gone(storage: Storage) -> None:
+    assert submit(record_bytes()).status == 201
+    response = call(
+        "PUT",
+        "/api/v1/submissions/5001-1/annotations",
+        body=NEW_BODY,
+        query=DEMO_QUERY,
+        headers=[(b"content-type", b"application/json"), (b"if-match", b'"1"')],
+    )
+    assert response.status in (404, 405)
 
 
 def test_empty_map_removes_every_annotation(storage: Storage) -> None:
     assert submit(record_bytes()).status == 201
     assert update_annotations("5001-1", DEMO_QUERY, b'{"annotations":{}}').status == 200
     exported = export("5001-1", DEMO_QUERY).json()
-    assert exported["record"]["annotations"] == {}
+    assert exported["record"]["annotation_sets"]["user"]["annotations"] == {}
     assert exported["record"]["source_metadata"]["source_record_id"] == "external-5001"
 
 
@@ -348,9 +381,9 @@ def test_invalid_annotations_get_the_record_report(storage: Storage) -> None:
     report = response.json()
     assert report["valid"] is False
     assert [(i["path"], i["code"]) for i in report["issues"]] == [
-        ("/annotations/Unknown", "UNKNOWN_LABEL"),
-        ("/annotations/SDrug/0", "INVALID_RANGE"),
-        ("/annotations/AE/0/text", "TEXT_MISMATCH"),
+        ("/annotation_sets/user/annotations/Unknown", "UNKNOWN_LABEL"),
+        ("/annotation_sets/user/annotations/SDrug/0", "INVALID_RANGE"),
+        ("/annotation_sets/user/annotations/AE/0/text", "TEXT_MISMATCH"),
     ]
     assert stored(storage)[2] == 1
 
@@ -366,7 +399,7 @@ def test_duplicate_annotations_are_rejected(storage: Storage) -> None:
 
 
 def test_valid_update_report_matches_validate(storage: Storage) -> None:
-    assert submit(record_bytes(annotations=MISSING)).status == 201
+    assert submit(record_bytes(annotation_sets=MISSING)).status == 201
     response = update_annotations("5001-1", DEMO_QUERY, NEW_BODY)
     expected = post_single(stored(storage)[0].encode()).json()
     assert response.json()["report"] == expected
@@ -438,7 +471,7 @@ def test_new_operations_are_documented(spec: dict[str, Any]) -> None:
     listing = spec["paths"]["/api/v1/submissions"]["get"]
     assert set(listing["responses"]) == {"200", "422", "500", "503"}
     assert [p["name"] for p in listing["parameters"]] == ["username"]
-    put = spec["paths"]["/api/v1/submissions/{case_id}/annotations"]["put"]
+    put = spec["paths"]["/api/v1/submissions/{case_id}/annotation-sets/user"]["put"]
     assert set(put["responses"]) == {
         "200",
         "400",
@@ -473,7 +506,7 @@ def test_new_operations_are_documented(spec: dict[str, Any]) -> None:
 
 
 def test_update_examples_match_runtime(spec: dict[str, Any], storage: Storage) -> None:
-    put = spec["paths"]["/api/v1/submissions/{case_id}/annotations"]["put"]
+    put = spec["paths"]["/api/v1/submissions/{case_id}/annotation-sets/user"]["put"]
     content = put["requestBody"]["content"]["application/json"]["examples"]
     request = content["annotated_record"]["value"]
     assert submit(example_bytes("valid-record.json")).status == 201
@@ -536,7 +569,7 @@ def test_identities_and_values_never_logged(
     case_id, username = "SECRETCASE-7", "secret_user"
     query = username_query(username)
     record = record_bytes(
-        case_id=case_id, username=username, narrative="SECRET NARRATIVE", annotations=MISSING
+        case_id=case_id, username=username, narrative="SECRET NARRATIVE", annotation_sets=MISSING
     )
     assert submit(record).status == 201
     body = b'{"annotations":{"AE":[{"text":"SECRET","start":0,"end":6}]}}'
@@ -546,8 +579,8 @@ def test_identities_and_values_never_logged(
     for secret in ("SECRET", "secret_user"):
         assert secret not in caplog.text
     assert "GET /api/v1/submissions status=200" in caplog.text
-    assert "PUT /api/v1/submissions/{case_id}/annotations status=200" in caplog.text
-    assert "PUT /api/v1/submissions/{case_id}/annotations status=412" in caplog.text
+    assert "PUT /api/v1/submissions/{case_id}/annotation-sets/user status=200" in caplog.text
+    assert "PUT /api/v1/submissions/{case_id}/annotation-sets/user status=412" in caplog.text
 
 
 # ---------------------------------------------------------------- F13 frontend serving

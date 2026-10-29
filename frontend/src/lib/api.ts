@@ -60,13 +60,13 @@ export async function loadSubmission(caseId: string, username: string): Promise<
   return parseExport(await response.text());
 }
 
-export async function saveAnnotations(
+export async function saveUserSet(
   caseId: string,
   username: string,
   version: number,
   mapText: string,
 ): Promise<SaveResult> {
-  const url = `${BASE}/${encodeURIComponent(caseId)}/annotations?${query(username)}`;
+  const url = `${BASE}/${encodeURIComponent(caseId)}/annotation-sets/user?${query(username)}`;
   const response = await fetch(url, {
     method: "PUT",
     cache: "no-store",

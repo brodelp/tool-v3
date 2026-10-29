@@ -18,6 +18,8 @@ from tests.helpers import (
     make_record,
     post_batch,
     post_single,
+    user_set,
+    with_user_annotations,
 )
 
 
@@ -102,7 +104,7 @@ def test_distinct_case_ids_pass() -> None:
 
 
 def test_repeated_case_id_detected_after_issue_cap() -> None:
-    noisy = make_record(case_id="1-1", annotations={f"Bad{i}": [] for i in range(25)})
+    noisy = with_user_annotations({f"Bad{i}": [] for i in range(25)}, case_id="1-1")
     records = (
         [noisy]
         + [make_record(case_id=f"{10 + i}-1") for i in range(97)]
@@ -126,21 +128,21 @@ def test_repetitions_across_requests_pass() -> None:
 
 
 def test_issue_cap_with_exact_totals_and_per_record_counts() -> None:
-    first = make_record(case_id="1-1", annotations={f"X{i:02}": [] for i in range(15)})
-    second = make_record(case_id="2-1", annotations={f"Y{i:02}": [] for i in range(15)})
+    first = with_user_annotations({f"X{i:02}": [] for i in range(15)}, case_id="1-1")
+    second = with_user_annotations({f"Y{i:02}": [] for i in range(15)}, case_id="2-1")
     response = batch(first, second)
     body = response.json()
     assert body["issue_count"] == 30
     assert len(body["issues"]) == 20
     assert body["omitted_issue_count"] == 10
     assert [r["issue_count"] for r in body["records"]] == [15, 15]
-    assert body["issues"][14]["path"] == "/records/0/annotations/X14"
-    assert body["issues"][15]["path"] == "/records/1/annotations/Y00"
+    assert body["issues"][14]["path"] == "/records/0/annotation_sets/user/annotations/X14"
+    assert body["issues"][15]["path"] == "/records/1/annotation_sets/user/annotations/Y00"
     assert body["valid"] is False and body["invalid_record_count"] == 2
 
 
 def test_inventory_cap_with_exact_totals_and_order() -> None:
-    record = make_record(annotations={})
+    record = make_record(annotation_sets={})
     for i in range(150):
         record[f"f{i:03}"] = i
     response = post_single(dumps(record))
@@ -154,8 +156,8 @@ def test_inventory_cap_with_exact_totals_and_order() -> None:
 
 
 def test_inventory_order_records_labels_annotations_names() -> None:
-    record = make_record(
-        annotations={
+    record = with_user_annotations(
+        {
             "zz": [{"text": "A", "start": 0, "end": 1, "b": 1, "a": 2}],
             "AE": [{"text": "n", "start": 15, "end": 16, "y": 1}],
             "SDrug": [
@@ -167,19 +169,19 @@ def test_inventory_order_records_labels_annotations_names() -> None:
         Zed=1,
         alpha=2,
     )
-    other = make_record(case_id="2-1", annotations={}, beta=None)
+    other = make_record(case_id="2-1", annotation_sets={}, beta=None)
     response = batch(record, other)
     paths = [f["path"] for f in response.json()["foreign_fields"]]
     assert paths == [
         "/records/0/Zed",
         "/records/0/alpha",
         "/records/0/source_metadata",
-        "/records/0/annotations/SDrug/0/x",
-        "/records/0/annotations/SDrug/1/w",
-        "/records/0/annotations/AE/0/y",
-        "/records/0/annotations/Mm/0/c",
-        "/records/0/annotations/zz/0/a",
-        "/records/0/annotations/zz/0/b",
+        "/records/0/annotation_sets/user/annotations/SDrug/0/x",
+        "/records/0/annotation_sets/user/annotations/SDrug/1/w",
+        "/records/0/annotation_sets/user/annotations/AE/0/y",
+        "/records/0/annotation_sets/user/annotations/Mm/0/c",
+        "/records/0/annotation_sets/user/annotations/zz/0/a",
+        "/records/0/annotation_sets/user/annotations/zz/0/b",
         "/records/1/beta",
         "/records/1/source_metadata",
     ]
@@ -200,14 +202,18 @@ def test_reordering_object_keys_preserves_findings_and_order() -> None:
         case_id="bad",
         username="bad name",
         meta={"z": "\u0000", "a": [1, "\ud800"], "m": {"q": "\u0000", "b": 1}},
-        annotations={
-            "Zeta": [],
-            "Alpha": [5],
-            "AE": [
-                {"start": 30, "end": 31, "text": "x", "k": 1},
-                {"text": "n", "end": 16, "start": 15},
-            ],
-            "SDrug": [{"text": "aspirin", "start": 0, "end": 7}],
+        annotation_sets={
+            "user": user_set(
+                {
+                    "Zeta": [],
+                    "Alpha": [5],
+                    "AE": [
+                        {"start": 30, "end": 31, "text": "x", "k": 1},
+                        {"text": "n", "end": 16, "start": 15},
+                    ],
+                    "SDrug": [{"text": "aspirin", "start": 0, "end": 7}],
+                }
+            )
         },
     )
     baseline = batch(record, record)
@@ -222,19 +228,20 @@ def test_reordering_object_keys_preserves_findings_and_order() -> None:
 def test_array_order_is_significant() -> None:
     a = {"text": "Aspirin", "start": 0, "end": 7, "m": 1}
     b = {"text": "Aspirin", "start": 0, "end": 7, "m": 2}
-    first = post_single(dumps(make_record(annotations={"SDrug": [a, b]}))).json()
-    second = post_single(dumps(make_record(annotations={"SDrug": [b, a]}))).json()
-    assert first["issues"][0]["path"] == second["issues"][0]["path"] == "/annotations/SDrug/1"
+    first = post_single(dumps(with_user_annotations({"SDrug": [a, b]}))).json()
+    second = post_single(dumps(with_user_annotations({"SDrug": [b, a]}))).json()
+    path = "/annotation_sets/user/annotations/SDrug/1"
+    assert first["issues"][0]["path"] == second["issues"][0]["path"] == path
     assert [f["path"] for f in first["foreign_fields"]][1:] == [
-        "/annotations/SDrug/0/m",
-        "/annotations/SDrug/1/m",
+        "/annotation_sets/user/annotations/SDrug/0/m",
+        "/annotation_sets/user/annotations/SDrug/1/m",
     ]
 
 
 def test_one_mib_unknown_label_with_100_annotations_stays_bounded() -> None:
     label = "Q" * 1_048_576
     annotations = [{"text": "Aspirin", "start": 0, "end": 7, "external_ref": i} for i in range(100)]
-    record = make_record(annotations={label: annotations, "SDrug": [annotations[0]]})
+    record = with_user_annotations({label: annotations, "SDrug": [annotations[0]]})
     raw = dumps(record)
     assert len(raw) < MAX_BODY_BYTES
     response = post_single(raw, query="echo=true")
@@ -244,7 +251,7 @@ def test_one_mib_unknown_label_with_100_annotations_stays_bounded() -> None:
     assert body["issues"] == [
         {
             "location": "body",
-            "path": "/annotations",
+            "path": "/annotation_sets/user/annotations",
             "code": "UNKNOWN_LABEL",
             "message": (
                 "Annotation labels must be one of the configured label names. "
@@ -256,7 +263,7 @@ def test_one_mib_unknown_label_with_100_annotations_stays_bounded() -> None:
     assert body["foreign_field_count"] == 102
     assert [f["path"] for f in body["foreign_fields"]] == [
         "/source_metadata",
-        "/annotations/SDrug/0/external_ref",
+        "/annotation_sets/user/annotations/SDrug/0/external_ref",
     ]
     assert body["omitted_foreign_field_count"] == 100
     assert len(response.body) < 20_000
@@ -264,7 +271,7 @@ def test_one_mib_unknown_label_with_100_annotations_stays_bounded() -> None:
 
 
 def test_many_long_names_cannot_multiply_report_size() -> None:
-    record = make_record(annotations={})
+    record = make_record(annotation_sets={})
     for i in range(4000):
         record[f"{i:04}" + "n" * 1000] = i
     raw = dumps(record)
@@ -336,7 +343,7 @@ def assert_internal_error(response: RawResponse) -> None:
     ],
 )
 def test_pointer_escaping_for_inventory_and_issues(name: str, pointer: str) -> None:
-    record = make_record(annotations={})
+    record = make_record(annotation_sets={})
     record[name] = {"bad": "\u0000"}
     response = post_single(dumps(record))
     body = response.json()
@@ -358,7 +365,7 @@ def name_with_pointer_bytes(total: int, tail: str = "a") -> str:
 def test_1024_and_1025_byte_pointer_boundaries(tail: str) -> None:
     exact = name_with_pointer_bytes(1024, tail)
     over = name_with_pointer_bytes(1025, tail)
-    record = make_record(annotations={})
+    record = make_record(annotation_sets={})
     record[exact] = None
     record[over] = None
     raw = dumps(record)
@@ -390,7 +397,7 @@ def test_1024_and_1025_byte_pointer_boundaries(tail: str) -> None:
 def test_issue_paths_at_exact_boundary_are_not_truncated() -> None:
     exact = name_with_pointer_bytes(1024)
     over = name_with_pointer_bytes(1025)
-    raw = dumps(make_record(annotations={}))
+    raw = dumps(make_record(annotation_sets={}))
     raw = (
         raw[:-1]
         + b","
@@ -414,9 +421,9 @@ def test_issue_paths_at_exact_boundary_are_not_truncated() -> None:
 
 def test_batch_prefix_counts_toward_pointer_limit() -> None:
     name = name_with_pointer_bytes(1024 - len("/records/0"))
-    record = make_record(annotations={})
+    record = make_record(annotation_sets={})
     record[name] = None
-    longer = make_record(case_id="2-1", annotations={})
+    longer = make_record(case_id="2-1", annotation_sets={})
     longer[name + "a"] = None
     paths = [f["path"] for f in batch(record, longer).json()["foreign_fields"]]
     assert any(len(p.encode()) == 1024 for p in paths)
@@ -425,7 +432,7 @@ def test_batch_prefix_counts_toward_pointer_limit() -> None:
 
 def test_nested_fallback_uses_deepest_whole_token_ancestor() -> None:
     long_name = "k" * 2000
-    raw = dumps(make_record(annotations={}))
+    raw = dumps(make_record(annotation_sets={}))
     raw = raw[:-1] + b',"meta":{"inner":[{"' + long_name.encode() + b'":{"x":1e400}}]}}'
     issues = post_single(raw).json()["issues"]
     assert issues == [
@@ -450,7 +457,7 @@ def test_rejected_values_never_appear_in_messages_or_logs(caplog: pytest.LogCapt
     record = make_record(
         username="SECRET-NAME bad", narrative="SECRET-NARR\u0000", offset_unit="SECRET-NAME"
     )
-    record["annotations"]["AE"][0]["text"] = "SECRET-QUOTE"
+    record["annotation_sets"]["user"]["annotations"]["AE"][0]["text"] = "SECRET-QUOTE"
     raw = dumps(record)[:-1] + b',"big":123456789012345678901234567890}'
     for query in ("", "echo=SECRET-NAME", "known=SECRET-NAME"):
         response = post_single(raw, query=query)

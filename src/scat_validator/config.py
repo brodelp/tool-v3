@@ -54,16 +54,31 @@ LABELS: Final[tuple[str, ...]] = (
 )
 LABEL_ORDER: Final[dict[str, int]] = {label: i for i, label in enumerate(LABELS)}
 
-# Owned record fields in diagnostic order (spec §3.1). offset_unit and annotations are optional.
+# Owned record fields in diagnostic order (spec §3.1, stage 4 §2.1). offset_unit and
+# annotation_sets are optional.
 RECORD_FIELDS: Final = (
     "case_id",
     "username",
     "narrative",
     "offset_unit",
-    "annotations",
+    "annotation_sets",
 )
 REQUIRED_RECORD_FIELDS: Final = ("case_id", "username", "narrative")
 ANNOTATION_FIELDS: Final = ("text", "start", "end")
+
+# Annotation sets (stage 4 spec §2). The former top-level map is rejected, not foreign metadata.
+ANNOTATION_SETS_FIELD: Final = "annotation_sets"
+SUPERSEDED_FIELD_NAME: Final = "annotations"
+USER_SET_ID: Final = "user"
+LLM_SET_PREFIX: Final = "llm:"
+SET_KINDS: Final = ("user", "llm")
+# Owned set properties in diagnostic order; an llm set also owns LLM_SET_FIELDS.
+SET_FIELDS: Final = ("kind", "annotations")
+LLM_SET_FIELDS: Final = ("provider", "model", "generated_at")
+MAX_ANNOTATION_SETS: Final = 16
+# An llm set id is llm:<provider>:<model>, split at its first two colons.
+PROVIDER_PATTERN: Final = r"^[a-z][a-z0-9-]{0,31}$"
+MODEL_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$"
 
 # Per-record checks in reporting order (spec §6.4).
 CHECKS: Final = (

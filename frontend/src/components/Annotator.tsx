@@ -11,7 +11,7 @@ import {
   type Annotation,
   type SerializedMap,
 } from "../lib/annotations";
-import { describeError, saveAnnotations, type Issue } from "../lib/api";
+import { describeError, saveUserSet, type Issue } from "../lib/api";
 import { pageOf } from "../lib/paginate";
 import type { LoadedSubmission } from "../lib/record";
 import { coveringAt, segment, type Range } from "../lib/segments";
@@ -54,13 +54,13 @@ interface PlacedIssues {
 
 const NO_ISSUES: PlacedIssues = { byId: new Map(), other: [] };
 
-/** Report paths are `/annotations/<label>/<index>[/field]` (stage 3 §3.2). */
+/** Report paths are `/annotation_sets/user/annotations/<label>/<index>[/field]` (stage 4 §4.2). */
 function placeIssues(issues: readonly Issue[], map: SerializedMap): PlacedIssues {
   const byId = new Map<string, Issue[]>();
   const other: Issue[] = [];
   for (const issue of issues) {
-    const [, root, label, index] = issue.path.split("/");
-    const id = root === "annotations" ? map.positions.get(`${label ?? ""}/${index ?? ""}`) : undefined;
+    const [, root, set, key, label, index] = issue.path.split("/");
+    const id = root === "annotation_sets" && set === "user" && key === "annotations" ? map.positions.get(`${label ?? ""}/${index ?? ""}`) : undefined;
     if (id === undefined) other.push(issue);
     else byId.set(id, [...(byId.get(id) ?? []), issue]);
   }
@@ -80,9 +80,9 @@ const TIME = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-di
 export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorProps) {
   const { narrative, caseId, username } = submission;
   const text = narrative.text;
-  const [annotations, setAnnotations] = useState<readonly Annotation[]>(submission.annotations);
+  const [annotations, setAnnotations] = useState<readonly Annotation[]>(submission.userAnnotations);
   const [version, setVersion] = useState(submission.version);
-  const [savedText, setSavedText] = useState(() => serializeMap(submission.annotations).text);
+  const [savedText, setSavedText] = useState(() => serializeMap(submission.userAnnotations).text);
   const [pending, setPending] = useState<Range | null>(null);
   const [popup, setPopup] = useState<Popup | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -128,7 +128,7 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
     const sent = serialized;
     setSaveState({ kind: "saving" });
     try {
-      const result = await saveAnnotations(caseId, username, version, sent.text);
+      const result = await saveUserSet(caseId, username, version, sent.text);
       if (result.kind === "saved") {
         setVersion(result.version);
         setSavedText(sent.text);
