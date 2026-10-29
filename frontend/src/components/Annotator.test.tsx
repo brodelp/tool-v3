@@ -23,6 +23,8 @@ function exportBody(narrative: string, annotations = "{}", version = 1, extraSet
   }).replace('"__map__":0', `"annotation_sets":{"user":{"kind":"user","annotations":${annotations}}${extraSets}}`);
 }
 
+const LLM_ON = { enabled: true, provider: "anthropic", model: "claude-x" } as const;
+
 function setup(narrative: string, annotations = "{}", measurer = pagesOf(10_000), extraSets = "") {
   const onReload = vi.fn();
   const view = render(
@@ -31,6 +33,7 @@ function setup(narrative: string, annotations = "{}", measurer = pagesOf(10_000)
       onBack={vi.fn()}
       onReload={onReload}
       measurer={measurer}
+      llm={LLM_ON}
     />,
   );
   const text = view.container.querySelector<HTMLElement>(".page-text");
@@ -410,5 +413,103 @@ describe("annotation set tabs (stage 4 §6)", () => {
     await userEvent.keyboard("{ArrowRight}");
     expect(screen.getByRole("tab", { name: /claude-x/ })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+  });
+});
+
+describe("LLM proposals (stage 4 §6)", () => {
+  const mine = '{"SDrug":[{"text":"Aspirin","start":0,"end":7}]}';
+  const proposalBody = (replaces = false) => ({
+    proposal_id: "p1",
+    case_id: "5001-1",
+    username: "demo_annotator",
+    set_id: "llm-1",
+    set: {
+      kind: "llm",
+      provider: "anthropic",
+      model: "claude-x",
+      generated_at: "2026-10-29T10:00:00Z",
+      annotations: { AE: [{ text: "nausea", start: 15, end: 21 }] },
+    },
+    annotation_count: 1,
+    annotations_by_label: { AE: 1 },
+    replaces_existing_set: replaces,
+    based_on_version: 1,
+    expires_at: "2026-10-29T11:00:00Z",
+  });
+
+  async function run(replaces = false) {
+    const view = setup("Aspirin caused nausea.", mine);
+    const fetchMock = stubFetch(json(201, proposalBody(replaces)));
+    await userEvent.click(screen.getByRole("button", { name: /Annotate with LLM/ }));
+    await screen.findByText("LLM proposal — not saved");
+    return { ...view, fetchMock };
+  }
+
+  it("run shows the proposal tab read-only with counts", async () => {
+    const { text, fetchMock } = await run();
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe("/api/v1/submissions/5001-1/llm-proposals?username=demo_annotator");
+    expect(init?.method).toBe("POST");
+    expect(screen.getByRole("tab", { name: "LLM proposal" })).toHaveAttribute("aria-selected", "true");
+    expect([...text.querySelectorAll(".mark")].map((m) => m.textContent)).toEqual(["nausea"]);
+    expect(document.querySelector(".proposal-counts")).toHaveTextContent("1 annotation: AE 1");
+    select(text, 8, 14);
+    mouseUp(text);
+    expect(screen.queryByRole("dialog", { name: "Choose a label" })).toBeNull();
+  });
+
+  it("accept sends If-Match and adds the set", async () => {
+    await run();
+    const fetchMock = stubFetch(json(200, { version: 2, updated_at: "2026-10-29T10:05:00Z" }));
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe("/api/v1/submissions/5001-1/llm-proposals/p1/accept?username=demo_annotator");
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toMatchObject({ "If-Match": '"1"' });
+    expect(await screen.findByText("Version 2")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "LLM proposal" })).toBeNull();
+    expect(screen.getByRole("tab", { name: /claude-x/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Remove set" })).toBeInTheDocument();
+  });
+
+  it("accept keeps unsaved user edits", async () => {
+    const { text } = setup("Aspirin caused nausea.", mine);
+    select(text, 8, 14);
+    mouseUp(text);
+    chooseLabel("AE");
+    stubFetch(json(201, proposalBody()));
+    await userEvent.click(screen.getByRole("button", { name: /Annotate with LLM/ }));
+    await screen.findByText("LLM proposal — not saved");
+    stubFetch(json(200, { version: 2, updated_at: "2026-10-29T10:05:00Z" }));
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await screen.findByText("Version 2");
+    expect(screen.getByLabelText("unsaved changes")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /My annotations/ }));
+    expect([...text.querySelectorAll(".mark")].map((m) => m.textContent)).toEqual(["Aspirin", "caused"]);
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved changes");
+  });
+
+  it("accept conflict offers reload", async () => {
+    const { onReload } = await run();
+    stubFetch(json(412, { error: { code: "VERSION_CONFLICT" } }));
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Reload case" }));
+    expect(onReload).toHaveBeenCalledOnce();
+  });
+
+  it("discard deletes the proposal", async () => {
+    await run();
+    const fetchMock = stubFetch(new Response(null, { status: 204 }));
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe("/api/v1/submissions/5001-1/llm-proposals/p1?username=demo_annotator");
+    expect(init?.method).toBe("DELETE");
+    expect(screen.queryByRole("tab", { name: "LLM proposal" })).toBeNull();
+    expect(screen.getByRole("tab", { name: /My annotations/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("shows a replacement notice when the proposal replaces a stored set", async () => {
+    await run(true);
+    expect(screen.getByText("Accepting replaces the stored set from claude-x.")).toBeInTheDocument();
   });
 });

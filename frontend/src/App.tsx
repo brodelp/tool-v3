@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Annotator } from "./components/Annotator";
 import { CaseList } from "./components/CaseList";
 import type { MeasurerFactory } from "./hooks/usePages";
-import { describeError, loadSubmission } from "./lib/api";
+import { describeError, getLlmStatus, loadSubmission, type LlmStatus } from "./lib/api";
 import type { LoadedSubmission } from "./lib/record";
 
 const USERNAME_KEY = "scat.username";
@@ -40,6 +40,17 @@ export function App({ measurer }: AppProps) {
   const [caseId, setCaseId] = useState<string | null>(null);
   const [opened, setOpened] = useState<Opened | null>(null);
   const [reloads, setReloads] = useState(0);
+  const [llm, setLlm] = useState<LlmStatus>({ enabled: false, provider: null, model: null });
+
+  useEffect(() => {
+    let current = true;
+    void getLlmStatus().then((status) => {
+      if (current) setLlm(status);
+    });
+    return () => {
+      current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (caseId === null || username === "") return;
@@ -72,6 +83,7 @@ export function App({ measurer }: AppProps) {
         <Annotator
           key={opened.key}
           submission={opened.submission}
+          llm={llm}
           onBack={close}
           onReload={() => {
             setReloads(reloads + 1);

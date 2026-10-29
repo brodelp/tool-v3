@@ -61,7 +61,7 @@ function readMap(body: string, start: number): Annotation[] {
   return annotations;
 }
 
-function byCodePoint(a: string, b: string): number {
+export function byCodePoint(a: string, b: string): number {
   const x = Array.from(a);
   const y = Array.from(b);
   for (let i = 0; i < Math.min(x.length, y.length); i += 1) {

@@ -11,15 +11,28 @@ import {
   type Annotation,
   type SerializedMap,
 } from "../lib/annotations";
-import { describeError, removeLlmSet, saveUserSet, type Issue } from "../lib/api";
+import {
+  acceptProposal,
+  ApiError,
+  describeError,
+  discardProposal,
+  proposeAnnotations,
+  removeLlmSet,
+  saveUserSet,
+  type Issue,
+  type LlmStatus,
+  type Proposal,
+} from "../lib/api";
 import { pageOf } from "../lib/paginate";
-import type { LlmSet, LoadedSubmission } from "../lib/record";
+import { byCodePoint, type LlmSet, type LoadedSubmission } from "../lib/record";
 import { coveringAt, segment, type Range } from "../lib/segments";
 import { clearSelection, readSelection } from "../lib/selection";
 import { AnnotationPanel } from "./AnnotationPanel";
 import { segmentStyle } from "./highlight";
 import { Inspector } from "./Inspector";
 import { LabelPicker } from "./LabelPicker";
+import { LlmRun } from "./LlmRun";
+import { ProposalBar } from "./ProposalBar";
 import { SourceTabs, setTitle, type SourceId } from "./SourceTabs";
 
 interface AnnotatorProps {
@@ -28,7 +41,11 @@ interface AnnotatorProps {
   /** Load the latest version from the server again (after a version conflict). */
   readonly onReload: () => void;
   readonly measurer?: MeasurerFactory;
+  /** Whether LLM annotation is configured; absent means it is not offered. */
+  readonly llm?: LlmStatus;
 }
+
+const NO_LLM: LlmStatus = { enabled: false, provider: null, model: null };
 
 type Popup =
   | { readonly kind: "pick"; readonly x: number; readonly y: number; readonly message: string | null }
@@ -78,7 +95,7 @@ function isEditable(target: EventTarget | null): boolean {
 
 const TIME = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
-export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorProps) {
+export function Annotator({ submission, onBack, onReload, measurer, llm = NO_LLM }: AnnotatorProps) {
   const { narrative, caseId, username } = submission;
   const text = narrative.text;
   const [userAnnotations, setAnnotations] = useState<readonly Annotation[]>(submission.userAnnotations);
@@ -87,7 +104,15 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
   const [removeError, setRemoveError] = useState<string | null>(null);
   const readOnly = active !== "user";
   // Tabs only change what is shown; `userAnnotations` keeps unsaved edits meanwhile.
-  const activeSet = readOnly ? llmSets.find((set) => set.id === active) : undefined;
+  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [accepting, setAccepting] = useState(false);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const proposalRef = useRef<Proposal | null>(null);
+  useEffect(() => {
+    proposalRef.current = proposal;
+  }, [proposal]);
+  const storedSet = readOnly ? llmSets.find((set) => set.id === active) : undefined;
+  const activeSet = active === "proposal" ? proposal?.set : storedSet;
   const annotations = useMemo(
     () => (readOnly ? (activeSet?.annotations ?? []) : userAnnotations),
     [readOnly, activeSet, userAnnotations],
@@ -280,6 +305,52 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
     clearSelection();
   };
 
+  const runModel = async (signal: AbortSignal) => {
+    const made = await proposeAnnotations(caseId, username, signal);
+    const old = proposalRef.current;
+    if (old !== null) discardProposal(caseId, username, old.proposalId).catch(() => undefined);
+    setProposalError(null);
+    setProposal(made);
+    select("proposal");
+  };
+
+  const accept = async () => {
+    if (proposal === null || accepting) return;
+    setAccepting(true);
+    setProposalError(null);
+    try {
+      const result = await acceptProposal(caseId, username, proposal.proposalId, version);
+      if (result.kind === "saved") {
+        const set = proposal.set;
+        setVersion(result.version);
+        setLlmSets((sets) => [...sets.filter((s) => s.id !== set.id), set].sort((a, b) => byCodePoint(a.id, b.id)));
+        setProposal(null);
+        select(set.id);
+      } else if (result.kind === "invalid") {
+        const n = result.issueCount;
+        setProposalError(`Not accepted: the service found ${n} ${n === 1 ? "problem" : "problems"} in the proposal.`);
+      } else {
+        setSaveState({ kind: "conflict" });
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "PROPOSAL_NOT_FOUND") {
+        setProposal(null);
+        select("user");
+      }
+      setProposalError(`Not accepted. ${describeError(error)}`);
+    } finally {
+      setAccepting(false);
+    }
+  };
+
+  const discard = () => {
+    if (proposal === null) return;
+    discardProposal(caseId, username, proposal.proposalId).catch(() => undefined);
+    setProposal(null);
+    setProposalError(null);
+    select("user");
+  };
+
   const removeSet = async (set: LlmSet) => {
     if (!window.confirm(`Remove the annotations from ${set.model}? This creates a new version.`)) return;
     setRemoveError(null);
@@ -322,6 +393,7 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
         </button>
         <h1 className="case-id">{caseId}</h1>
         <span className="case-version">Version {version}</span>
+        <LlmRun status={llm} onRun={runModel} />
         <span className="save-status" role="status">
           {status}
         </span>
@@ -356,6 +428,11 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
           <p>Not removed. {removeError}</p>
         </div>
       )}
+      {proposalError !== null && (
+        <div className="banner" role="alert">
+          <p>{proposalError}</p>
+        </div>
+      )}
       {saveState.kind === "invalid" && (
         <div className="banner" role="alert">
           <p>
@@ -365,12 +442,15 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
         </div>
       )}
 
-      <SourceTabs sets={llmSets} proposal={null} active={active} userDirty={dirty} onSelect={select} />
-      {activeSet !== undefined && (
+      <SourceTabs sets={llmSets} proposal={proposal?.set ?? null} active={active} userDirty={dirty} onSelect={select} />
+      {active === "proposal" && proposal !== null && (
+        <ProposalBar proposal={proposal} busy={accepting} onAccept={() => void accept()} onDiscard={discard} />
+      )}
+      {storedSet !== undefined && (
         <div className="set-bar">
-          <span className="set-info">{setTitle(activeSet)}</span>
+          <span className="set-info">{setTitle(storedSet)}</span>
           <span className="set-note">LLM annotations are read-only.</span>
-          <button type="button" className="quiet danger" onClick={() => void removeSet(activeSet)}>
+          <button type="button" className="quiet danger" onClick={() => void removeSet(storedSet)}>
             Remove set
           </button>
         </div>

@@ -16,15 +16,23 @@ const EXPORT =
   '"updated_at":"2026-10-23T14:05:09Z","version":1,"offset_unit":"unicode-code-point",' +
   '"record":{"case_id":"a/b-1","username":"me+you@example.com","narrative":"Aspirin caused nausea."}}';
 
+/** Answers the status probe itself so a test's ordered responses go to the case routes. */
+function stubFetch(...responses: Response[]) {
+  const ordered = vi.fn<(url: string) => Promise<Response>>();
+  for (const response of responses) ordered.mockResolvedValueOnce(response);
+  vi.stubGlobal("fetch", (url: string) =>
+    url === "/api/v1/llm" ? Promise.resolve(json(200, { enabled: false, provider: null, model: null })) : ordered(url),
+  );
+  return ordered;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("App", () => {
   it("lists a username's cases and opens one", async () => {
-    const fetchMock = vi
-      .fn<(url: string) => Promise<Response>>()
-      .mockResolvedValueOnce(
+    const fetchMock = stubFetch(
         json(200, {
           username: "me+you@example.com",
           submissions: [
@@ -32,9 +40,8 @@ describe("App", () => {
             { case_id: "7-2", submitted_at: "t", updated_at: "2026-10-27T09:00:00Z", version: 3 },
           ],
         }),
-      )
-      .mockResolvedValueOnce(new Response(EXPORT, { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
+      new Response(EXPORT, { status: 200 }),
+    );
     render(<App />);
     await userEvent.type(screen.getByLabelText("Username"), "me+you@example.com");
     await userEvent.click(screen.getByRole("button", { name: "Show cases" }));
@@ -56,12 +63,9 @@ describe("App", () => {
   });
 
   it("explains an empty list and a failed one", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn<() => Promise<Response>>()
-        .mockResolvedValueOnce(json(200, { username: "nobody", submissions: [] }))
-        .mockResolvedValueOnce(json(422, { error: { code: "INVALID_PARAMETERS" } })),
+    stubFetch(
+      json(200, { username: "nobody", submissions: [] }),
+      json(422, { error: { code: "INVALID_PARAMETERS" } }),
     );
     render(<App />);
     const input = screen.getByLabelText("Username");

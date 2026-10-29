@@ -663,3 +663,72 @@ select {
 .set-bar .quiet {
   margin-left: auto;
 }
+
+.llm-run {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.llm-run-error {
+  color: var(--danger, #9b2c2c);
+  max-width: 40ch;
+}
+
+.llm-elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+.llm-progress {
+  width: 8rem;
+  height: 0.3rem;
+  overflow: hidden;
+  border-radius: 0.15rem;
+  background: color-mix(in srgb, currentColor 15%, transparent);
+}
+
+.llm-progress-bar {
+  width: 40%;
+  height: 100%;
+  background: currentColor;
+  animation: llm-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes llm-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .llm-progress-bar {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+
+.proposal-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+}
+
+.proposal-counts,
+.proposal-note {
+  color: var(--ink-muted);
+}
+
+.proposal-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.5rem;
+}
