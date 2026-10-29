@@ -164,3 +164,19 @@ def test_failures_map_to_unavailable(provider: str, handler: Any) -> None:
         complete(settings(provider), "p", client_for(handler))
     assert str(e.value) == ""
     assert e.value.__suppress_context__
+
+
+def test_unavailable_carries_upstream_status_only() -> None:
+    client = client_for(lambda request: httpx.Response(401, text="SECRET bad key"))
+    with pytest.raises(ProviderUnavailable) as raised:
+        complete(settings(), "PROMPT", client)
+    assert raised.value.upstream_status == 401
+    assert raised.value.args == ()
+    assert raised.value.__cause__ is None
+
+
+def test_unusable_success_has_no_upstream_status() -> None:
+    client = client_for(lambda request: httpx.Response(200, json={"unexpected": True}))
+    with pytest.raises(ProviderUnavailable) as raised:
+        complete(settings(), "PROMPT", client)
+    assert raised.value.upstream_status is None

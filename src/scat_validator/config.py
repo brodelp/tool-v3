@@ -85,6 +85,8 @@ MAX_LLM_NARRATIVE_CODE_POINTS: Final = 50_000
 LLM_TIMEOUT_SECONDS: Final = 600
 LLM_MAX_OUTPUT_TOKENS: Final = 32_000
 LLM_PROPOSAL_TTL_SECONDS: Final = 3600
+# Provider calls running at once; further runs wait for a slot (cancel does not stop a call).
+LLM_MAX_CONCURRENT_RUNS: Final = 4
 ANTHROPIC_API_VERSION: Final = "2026-10-21"
 # Markup tag in the model output -> label (spec §5.3).
 LLM_TAGS: Final[dict[str, str]] = {

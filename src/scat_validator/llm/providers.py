@@ -31,7 +31,12 @@ class ProviderTimeout(Exception):
 
 
 class ProviderUnavailable(Exception):
-    pass
+    """No usable response. Carries no message; ``upstream_status`` is the HTTP status of a
+    non-2xx response (None when there was no response, or a 2xx one was unusable)."""
+
+    def __init__(self, upstream_status: int | None = None) -> None:
+        super().__init__()
+        self.upstream_status = upstream_status
 
 
 def new_client() -> httpx.Client:
@@ -95,7 +100,7 @@ def complete(settings: LlmSettings, prompt: str, client: httpx.Client) -> Comple
     except httpx.HTTPError:
         raise ProviderUnavailable() from None
     if not response.is_success:
-        raise ProviderUnavailable() from None
+        raise ProviderUnavailable(response.status_code) from None
     try:
         data = response.json()
         if settings.provider == "anthropic":

@@ -52,7 +52,31 @@ def call(
     chunks: list[bytes] | None = None,
     content_length: bool = True,
 ) -> RawResponse:
-    """Send one request through the ASGI app.
+    """Send one request through the ASGI app in a new event loop (see ``call_async``)."""
+    return asyncio.run(
+        call_async(
+            method,
+            path,
+            body=body,
+            query=query,
+            headers=headers,
+            chunks=chunks,
+            content_length=content_length,
+        )
+    )
+
+
+async def call_async(
+    method: str,
+    path: str,
+    *,
+    body: bytes = b"",
+    query: bytes | str = b"",
+    headers: Iterable[tuple[bytes, bytes]] | None = None,
+    chunks: list[bytes] | None = None,
+    content_length: bool = True,
+) -> RawResponse:
+    """Send one request through the ASGI app in the running event loop.
 
     With ``chunks`` the body is streamed as separate ``http.request`` messages; with
     ``content_length=False`` no Content-Length header is added (as for chunked uploads).
@@ -95,7 +119,7 @@ def call(
     async def send(message: MutableMapping[str, Any]) -> None:
         sent.append(message)
 
-    asyncio.run(app(scope, receive, send))
+    await app(scope, receive, send)
     start = next(m for m in sent if m["type"] == "http.response.start")
     payload = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
     return RawResponse(

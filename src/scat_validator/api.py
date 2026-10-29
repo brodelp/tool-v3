@@ -7,6 +7,7 @@ proposals (stage 4 spec §4); the LLM status route is database-free. A built fro
 configured, is served at ``/`` after every API route (stage 3 spec §6).
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -18,7 +19,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
+import anyio
+import anyio.to_thread
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
@@ -31,6 +35,7 @@ from starlette.types import Scope
 
 from scat_validator.config import (
     ANNOTATION_SETS_FIELD,
+    LLM_MAX_CONCURRENT_RUNS,
     LLM_PROPOSAL_TTL_SECONDS,
     MAX_BODY_BYTES,
     MAX_LLM_NARRATIVE_CODE_POINTS,
@@ -576,11 +581,12 @@ def _log_llm(
     output_code_points: int | None,
     annotation_count: int | None,
     reason: str | None,
+    upstream_status: int | None = None,
 ) -> None:
     # Configuration and counts only: never the prompt, narrative, output, key, or base URL.
     logger.info(
         "llm provider=%s model=%s status=%d duration_ms=%.1f output_code_points=%s "
-        "annotations=%s reason=%s",
+        "annotations=%s reason=%s upstream_status=%s",
         provider,
         model,
         status,
@@ -588,6 +594,7 @@ def _log_llm(
         "-" if output_code_points is None else output_code_points,
         "-" if annotation_count is None else annotation_count,
         "-" if reason is None else reason,
+        "-" if upstream_status is None else upstream_status,
     )
 
 
@@ -600,9 +607,17 @@ def _run_llm(
     """Steps 7-9 of stage 4 §4.3: one provider call and its parsed set. Runs in a worker."""
     started = time.perf_counter()
 
-    def log(status: int, output: int | None, count: int | None, reason: str | None) -> None:
+    def log(
+        status: int,
+        output: int | None,
+        count: int | None,
+        reason: str | None,
+        upstream: int | None = None,
+    ) -> None:
         elapsed = time.perf_counter() - started
-        _log_llm(settings.provider, settings.model, status, elapsed, output, count, reason)
+        _log_llm(
+            settings.provider, settings.model, status, elapsed, output, count, reason, upstream
+        )
 
     try:
         if client is None:
@@ -613,8 +628,8 @@ def _run_llm(
     except ProviderTimeout:
         log(504, None, None, "LLM_TIMEOUT")
         return submission_failure("LLM_TIMEOUT")
-    except ProviderUnavailable:
-        log(502, None, None, "LLM_UNAVAILABLE")
+    except ProviderUnavailable as unavailable:
+        log(502, None, None, "LLM_UNAVAILABLE", unavailable.upstream_status)
         return submission_failure("LLM_UNAVAILABLE")
     except OutputInvalid as invalid:
         log(502, invalid.output_code_points, None, invalid.reason)
@@ -626,6 +641,21 @@ def _run_llm(
         raise
     log(201, proposed.output_code_points, proposed.annotation_count, None)
     return proposed
+
+
+_LLM_LIMITERS: Final[WeakKeyDictionary[asyncio.AbstractEventLoop, anyio.CapacityLimiter]] = (
+    WeakKeyDictionary()
+)
+
+
+def _llm_limiter() -> anyio.CapacityLimiter:
+    """The running loop's limiter for provider calls (LLM_MAX_CONCURRENT_RUNS at once; the rest
+    wait). One per event loop, created lazily, because a limiter binds to its loop."""
+    loop = asyncio.get_running_loop()
+    limiter = _LLM_LIMITERS.get(loop)
+    if limiter is None:
+        limiter = _LLM_LIMITERS[loop] = anyio.CapacityLimiter(LLM_MAX_CONCURRENT_RUNS)
+    return limiter
 
 
 def _narrative_and_presence(record_text: str, set_id: str) -> tuple[str, bool]:
@@ -662,8 +692,13 @@ async def _propose(request: Request) -> Outcome:
             return submission_failure("NARRATIVE_TOO_LONG")
         if contains_markup(narrative):
             return submission_failure("NARRATIVE_HAS_MARKUP")
-        proposed = await run_in_threadpool(
-            _run_llm, settings, narrative, state.llm_client, state.clock
+        proposed = await anyio.to_thread.run_sync(
+            _run_llm,
+            settings,
+            narrative,
+            state.llm_client,
+            state.clock,
+            limiter=_llm_limiter(),
         )
         if isinstance(proposed, Outcome):
             return proposed

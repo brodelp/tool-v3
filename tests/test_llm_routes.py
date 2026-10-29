@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
@@ -13,7 +14,11 @@ import pytest
 from sqlalchemy import text
 
 from scat_validator.api import app, lifespan
-from scat_validator.config import MAX_BODY_BYTES, MAX_LLM_NARRATIVE_CODE_POINTS
+from scat_validator.config import (
+    LLM_MAX_CONCURRENT_RUNS,
+    MAX_BODY_BYTES,
+    MAX_LLM_NARRATIVE_CODE_POINTS,
+)
 from scat_validator.contracts import (
     LLM_PROPOSAL_ADAPTER,
     LLM_STATUS_ADAPTER,
@@ -27,6 +32,7 @@ from tests.helpers import (
     MISSING,
     RawResponse,
     call,
+    call_async,
     dumps,
     export,
     make_record,
@@ -638,3 +644,73 @@ def test_llm_logs_contain_no_values(
     assert "annotations=2" in caplog.text
     assert "reason=NARRATIVE_ALTERED" in caplog.text
     assert "POST /api/v1/submissions/{case_id}/llm-proposals status=201" in caplog.text
+
+
+def test_upstream_status_is_logged(
+    storage: Storage, llm: Install, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    assert submit(record_bytes(annotation_sets=MISSING)).status == 201
+    llm(lambda request: httpx.Response(429, text="SECRET rate limit"))
+    assert failure(propose()) == (502, "LLM_UNAVAILABLE")
+    llm(lambda request: httpx.Response(200, json={"unexpected": "SECRET"}))
+    assert failure(propose()) == (502, "LLM_UNAVAILABLE")
+    assert "status=502" in caplog.text
+    assert "upstream_status=429" in caplog.text
+    assert "upstream_status=-" in caplog.text
+    for secret in ("SECRET", LLM_SECRET_KEY, "llm.internal", "pw@"):
+        assert secret not in caplog.text
+
+
+# ---------------------------------------------------------------- concurrency
+
+
+def test_concurrent_llm_runs_are_bounded(storage: Storage, llm: Install) -> None:
+    runs = LLM_MAX_CONCURRENT_RUNS + 1
+    for number in range(1, runs + 1):
+        record = record_bytes(case_id=f"{number}-1", annotation_sets=MISSING)
+        assert submit(record).status == 201
+    release = threading.Event()
+    lock = threading.Lock()
+    counts = {"in_flight": 0, "peak": 0}
+
+    def blocking(request: httpx.Request) -> httpx.Response:
+        with lock:
+            counts["in_flight"] += 1
+            counts["peak"] = max(counts["peak"], counts["in_flight"])
+        try:
+            release.wait(10)
+            body = {"content": [{"type": "text", "text": OUTPUT}], "stop_reason": "end_turn"}
+            return httpx.Response(200, json=body)
+        finally:
+            with lock:
+                counts["in_flight"] -= 1
+
+    llm(blocking)
+
+    async def scenario() -> tuple[int, list[RawResponse]]:
+        tasks = [
+            asyncio.create_task(
+                call_async(
+                    "POST",
+                    f"/api/v1/submissions/{number}-1/llm-proposals",
+                    query=DEMO_QUERY,
+                    headers=[],
+                )
+            )
+            for number in range(1, runs + 1)
+        ]
+        try:
+            for _ in range(500):  # wait (at most 5 s) for the limit to fill
+                if counts["peak"] >= LLM_MAX_CONCURRENT_RUNS:
+                    break
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.2)  # room for a sixth run to start, if it could
+            observed = counts["peak"]
+        finally:
+            release.set()
+        return observed, list(await asyncio.gather(*tasks))
+
+    observed, responses = asyncio.run(scenario())
+    assert observed == LLM_MAX_CONCURRENT_RUNS
+    assert [response.status for response in responses] == [201] * runs
