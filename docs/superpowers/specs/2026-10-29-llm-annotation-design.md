@@ -104,8 +104,10 @@ Each commit leaves `make check` green, so the contract switch lands as one chang
 3. `feat!: replace annotations with annotation_sets` (validator, observations, OpenAPI, migration
    0003, user-set route replacing `PUT …/annotations`, frontend reading and saving the user set,
    examples, smoke script)
-4. `feat(llm): configuration, prompt, providers, and tag parser`
-5. `feat(api): LLM status, proposal, accept, discard, and set removal routes` (migration 0004)
-6. `feat(frontend): annotation set tabs and read-only LLM sets`
-7. `feat(frontend): run, review, and accept LLM annotation`
-8. `docs: decisions, acceptance mapping, README, and compose configuration`
+4. `feat(llm): configuration, prompt, and tag parser`
+5. `feat(llm): Anthropic and OpenAI-compatible providers`
+6. `feat(storage): store LLM proposals` (migration 0004)
+7. `feat(api): LLM status, proposal, accept, discard, and set removal routes`
+8. `feat(frontend): annotation set tabs and read-only LLM sets`
+9. `feat(frontend): run, review, and accept LLM annotation`
+10. `docs: decisions, acceptance mapping, README, and compose configuration`
