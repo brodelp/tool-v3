@@ -163,7 +163,7 @@ export function Annotator({ submission, onBack, onReload, measurer }: AnnotatorP
         if (dirty) void save();
         return;
       }
-      if (isEditable(event.target)) return;
+      if (isEditable(event.target) || event.defaultPrevented) return;
       if (event.key === "Escape") cancel();
       else if (popup !== null) return;
       else if (event.key === "ArrowRight" || event.key === "PageDown") goTo(page + 1);

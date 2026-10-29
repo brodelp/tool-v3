@@ -402,4 +402,13 @@ describe("annotation set tabs (stage 4 §6)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
+
+  it("arrow keys on a focused tab switch tabs without turning the page", async () => {
+    setup("Aspirin caused nausea.", mine, pagesOf(10), llm);
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+    screen.getByRole("tab", { name: /My annotations/ }).focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: /claude-x/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+  });
 });
