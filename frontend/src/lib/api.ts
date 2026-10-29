@@ -194,7 +194,8 @@ export async function proposeAnnotations(
   for (const [label, entries] of Object.entries(body.set.annotations)) {
     for (const entry of entries) {
       annotations.push(
-        loadedAnnotation(label as Label, entry.start, entry.end, entry.text, body.set_id, position),
+        // Read-only: a proposal is never sent back, so no source text is kept.
+        loadedAnnotation(label as Label, entry.start, entry.end, entry.text, undefined, position),
       );
       position += 1;
     }

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MeasurerFactory } from "../hooks/usePages";
+import { proposeAnnotations } from "../lib/api";
 import { parseExport } from "../lib/record";
 import { Annotator } from "./Annotator";
 
@@ -506,6 +507,55 @@ describe("LLM proposals (stage 4 §6)", () => {
     expect(init?.method).toBe("DELETE");
     expect(screen.queryByRole("tab", { name: "LLM proposal" })).toBeNull();
     expect(screen.getByRole("tab", { name: /My annotations/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("explains the set limit when accept would add a 17th set", async () => {
+    await run();
+    stubFetch(
+      json(422, {
+        records: [],
+        issues: [
+          { location: "body", path: "/annotation_sets", code: "LIMIT_EXCEEDED", message: "Too many sets." },
+        ],
+        issue_count: 1,
+      }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(
+      await screen.findByText("This case already has 16 annotation sets. Remove one before accepting another."),
+    ).toBeInTheDocument();
+  });
+
+  it("disables running the model while accept is in flight", async () => {
+    await run();
+    let answer: (response: Response) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            answer = resolve;
+          }),
+      ),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Accept" }));
+    expect(screen.getByRole("button", { name: /Annotate with LLM/ })).toBeDisabled();
+    await act(async () => {
+      answer(json(200, { version: 2, updated_at: "2026-10-29T10:05:00Z" }));
+      await Promise.resolve();
+    });
+    expect(await screen.findByText("Version 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Annotate with LLM/ })).toBeEnabled();
+  });
+
+  it("does not give proposal annotations a source", async () => {
+    stubFetch(json(201, proposalBody()));
+    const made = await proposeAnnotations("5001-1", "demo_annotator", new AbortController().signal);
+    expect(made.set.annotations).toHaveLength(1);
+    for (const annotation of made.set.annotations) {
+      expect(annotation.source).toBeUndefined();
+      expect(annotation.source).not.toBe("llm-1");
+    }
   });
 
   it("shows a replacement notice when the proposal replaces a stored set", async () => {

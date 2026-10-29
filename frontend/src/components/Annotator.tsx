@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 
-import type { Label } from "../generated/labels";
+import { MAX_ANNOTATION_SETS, type Label } from "../generated/labels";
 import { usePages, type MeasurerFactory } from "../hooks/usePages";
 import {
   assignLanes,
@@ -328,7 +328,14 @@ export function Annotator({ submission, onBack, onReload, measurer, llm = NO_LLM
         select(set.id);
       } else if (result.kind === "invalid") {
         const n = result.issueCount;
-        setProposalError(`Not accepted: the service found ${n} ${n === 1 ? "problem" : "problems"} in the proposal.`);
+        const tooManySets = result.issues.some(
+          (issue) => issue.code === "LIMIT_EXCEEDED" && issue.path === "/annotation_sets",
+        );
+        setProposalError(
+          tooManySets
+            ? `This case already has ${MAX_ANNOTATION_SETS} annotation sets. Remove one before accepting another.`
+            : `Not accepted: the service found ${n} ${n === 1 ? "problem" : "problems"} in the proposal.`,
+        );
       } else {
         setSaveState({ kind: "conflict" });
       }
@@ -393,7 +400,7 @@ export function Annotator({ submission, onBack, onReload, measurer, llm = NO_LLM
         </button>
         <h1 className="case-id">{caseId}</h1>
         <span className="case-version">Version {version}</span>
-        <LlmRun status={llm} onRun={runModel} />
+        <LlmRun status={llm} onRun={runModel} disabled={accepting} />
         <span className="save-status" role="status">
           {status}
         </span>

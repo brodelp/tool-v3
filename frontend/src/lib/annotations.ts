@@ -31,16 +31,18 @@ function nextId(): string {
   return `a${sequence}`;
 }
 
+/** An annotation from the server; `source` is its exact JSON text, when it was kept. */
 export function loadedAnnotation(
   label: Label,
   start: number,
   end: number,
   text: string,
-  source: string,
+  source: string | undefined,
   position: number,
 ): Annotation {
-  const labelIndex = LABEL_INDEX.get(label) ?? 0;
-  return { id: nextId(), label, start, end, text, source, order: [0, labelIndex, position] };
+  const order = [0, LABEL_INDEX.get(label) ?? 0, position];
+  const annotation = { id: nextId(), label, start, end, text, order };
+  return source === undefined ? annotation : { ...annotation, source };
 }
 
 export function newAnnotation(

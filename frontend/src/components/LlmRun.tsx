@@ -6,6 +6,8 @@ interface LlmRunProps {
   readonly status: LlmStatus;
   /** Resolves when the run ended (its result is the caller's business); rejects on failure. */
   readonly onRun: (signal: AbortSignal) => Promise<void>;
+  /** True while something else (an accept) is in flight; a run cannot start then. */
+  readonly disabled?: boolean;
 }
 
 type RunState =
@@ -18,7 +20,7 @@ function clock(seconds: number): string {
 }
 
 /** Starts a model run and shows that it is working (stage 4 §6, "Annotate with LLM"). */
-export function LlmRun({ status, onRun }: LlmRunProps) {
+export function LlmRun({ status, onRun, disabled = false }: LlmRunProps) {
   const [state, setState] = useState<RunState>({ kind: "idle" });
   const [elapsed, setElapsed] = useState(0);
   const controller = useRef<AbortController | null>(null);
@@ -88,7 +90,12 @@ export function LlmRun({ status, onRun }: LlmRunProps) {
           {state.message}
         </p>
       )}
-      <button type="button" className={state.kind === "failed" ? "primary" : "quiet"} onClick={run}>
+      <button
+        type="button"
+        className={state.kind === "failed" ? "primary" : "quiet"}
+        onClick={run}
+        disabled={disabled}
+      >
         {state.kind === "failed" ? "Try again" : `Annotate with LLM · ${model}`}
       </button>
     </div>
