@@ -345,6 +345,12 @@ Choices the stage 4 spec and design leave open:
   reject `x-api-key` (seen as a 302 to a login page). The value is checked for either provider
   but only changes `anthropic` requests; `openai` always uses Bearer. `GET /api/v1/llm` does not
   report it.
+- **Extra root CAs.** The runtime image copies certifi's bundle to `/app/ca-bundle.pem`, appends
+  each `certs/*.crt` (the build fails on one that is not PEM), and sets `SSL_CERT_FILE` to it,
+  which httpx reads. With no certificates the bundle is certifi's alone, so trust is unchanged.
+  They are built in rather than bind-mounted because a mount source is resolved on the Docker
+  host, which breaks when Compose runs inside a container given the host's socket. The dev
+  container keeps certifi's default.
 - **Bodyless routes** reject any body with 413 after reading at most one byte;
   `GET /api/v1/llm` ignores query parameters.
 - **`set_id` is a query parameter** (models may contain `/`). Removal answers 404 `SET_NOT_FOUND`

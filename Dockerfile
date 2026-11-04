@@ -100,6 +100,19 @@ COPY --from=web-build /web/dist ./web
 ENV SCAT_WEB_DIR=/app/web
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable
+# Extra trusted root CAs, e.g. an enterprise root that signs an internal LLM gateway: each
+# certs/*.crt (PEM) is checked and appended to certifi's bundle, which httpx reads through
+# SSL_CERT_FILE. With none, the bundle is certifi's alone. Built in rather than bind-mounted, so it
+# also works when Compose talks to a remote daemon or to a socket passed into a container.
+COPY certs/ ./certs/
+RUN cp "$(python -m certifi)" ca-bundle.pem \
+    && for f in certs/*.crt; do \
+        [ -e "$f" ] || continue; \
+        python -c "import ssl, sys; ssl.create_default_context(cafile=sys.argv[1])" "$f" \
+            || { echo "$f: not a PEM certificate" >&2; exit 1; }; \
+        { cat "$f"; echo; } >> ca-bundle.pem; \
+    done
+ENV SSL_CERT_FILE=/app/ca-bundle.pem
 RUN groupadd --system app && useradd --system --gid app --no-create-home app
 USER app
 EXPOSE 8000

@@ -13,3 +13,7 @@ build/
 .env
 frontend/node_modules/
 frontend/dist/
+
+# Extra root CAs for the image (certs/README.md); only the README is tracked.
+certs/*
+!certs/README.md

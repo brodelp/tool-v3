@@ -306,6 +306,13 @@ SCAT_LLM_BASE_URL=https://<gateway host>/<path>/anthropic
 SCAT_LLM_AUTH=bearer
 ```
 
+A gateway whose certificate chains to an enterprise root CA fails TLS verification (502
+`LLM_UNAVAILABLE`, `upstream_status=-`). Save that root as PEM in `certs/<name>.crt` and rebuild
+with `docker compose up --build`: the image appends every `certs/*.crt` to certifi's bundle and
+points `SSL_CERT_FILE` at it. The certificate is built into the image, not mounted, so this also
+works when Compose talks to a remote Docker daemon or to a socket passed into a container. See
+`certs/README.md`.
+
 Ollama on the Windows host, reached from the container (no key):
 
 ```
