@@ -340,6 +340,11 @@ Choices the stage 4 spec and design leave open:
   `httpx.URL`, use `http` or `https`, have a host, and have a port in 1-65535 (httpx itself
   accepts any port number); otherwise the feature is disabled with one warning naming the
   variable, never its value. `complete()` also maps `httpx.InvalidURL` to `ProviderUnavailable`.
+- **Anthropic auth header.** `SCAT_LLM_AUTH` (`x-api-key` default, or `bearer`) picks how the
+  key reaches an `anthropic` provider; `bearer` matches the SDK's `auth_token` for gateways that
+  reject `x-api-key` (seen as a 302 to a login page). The value is checked for either provider
+  but only changes `anthropic` requests; `openai` always uses Bearer. `GET /api/v1/llm` does not
+  report it.
 - **Bodyless routes** reject any body with 413 after reading at most one byte;
   `GET /api/v1/llm` ignores query parameters.
 - **`set_id` is a query parameter** (models may contain `/`). Removal answers 404 `SET_NOT_FOUND`

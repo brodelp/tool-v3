@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -66,6 +67,25 @@ def test_anthropic_request_shape() -> None:
         "max_tokens": 123,
         "messages": [{"role": "user", "content": "PROMPT"}],
     }
+    assert "authorization" not in req.headers
+
+
+def test_anthropic_bearer_auth() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return anthropic_ok([{"type": "text", "text": "hi"}])
+
+    gateway = "https://gw.example/api/model/anthropic"
+    bearer = replace(settings(key="access:secret", base=gateway), anthropic_auth="bearer")
+    assert complete(bearer, "PROMPT", client_for(handler)) == Completion("hi", "complete")
+    (req,) = seen
+    assert str(req.url) == f"{gateway}/v1/messages"
+    assert req.headers["authorization"] == "Bearer access:secret"
+    assert "x-api-key" not in req.headers
+    assert req.headers["anthropic-version"] == "2026-10-21"
+    assert json.loads(req.content)["max_tokens"] == 123
 
 
 def test_anthropic_ignores_thinking_blocks_and_joins_text() -> None:

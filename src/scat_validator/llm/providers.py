@@ -45,11 +45,14 @@ def new_client() -> httpx.Client:
 
 def _request(settings: LlmSettings) -> tuple[str, dict[str, str]]:
     if settings.provider == "anthropic":
-        headers = {
-            "x-api-key": settings.api_key or "",
-            "anthropic-version": ANTHROPIC_API_VERSION,
-            "content-type": "application/json",
-        }
+        key = settings.api_key or ""
+        headers = (
+            {"authorization": f"Bearer {key}"}
+            if settings.anthropic_auth == "bearer"
+            else {"x-api-key": key}
+        )
+        headers["anthropic-version"] = ANTHROPIC_API_VERSION
+        headers["content-type"] = "application/json"
         return f"{settings.base_url}/v1/messages", headers
     headers = {"content-type": "application/json"}
     if settings.api_key:

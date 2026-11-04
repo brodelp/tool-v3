@@ -33,6 +33,13 @@ def test_anthropic_defaults() -> None:
     assert s.base_url == "https://api.anthropic.com"
     assert s.timeout_seconds == LLM_TIMEOUT_SECONDS
     assert s.max_output_tokens == LLM_MAX_OUTPUT_TOKENS
+    assert s.anthropic_auth == "x-api-key"
+
+
+def test_bearer_auth() -> None:
+    s = load_llm_settings({**ANTHROPIC, "SCAT_LLM_AUTH": "bearer"})
+    assert s is not None
+    assert s.anthropic_auth == "bearer"
 
 
 def test_openai_key_optional_and_base_url_override() -> None:
@@ -55,6 +62,7 @@ def test_openai_key_optional_and_base_url_override() -> None:
         ("SCAT_LLM_TIMEOUT_SECONDS", "abc"),
         ("SCAT_LLM_MAX_OUTPUT_TOKENS", "-5"),
         ("SCAT_LLM_MAX_OUTPUT_TOKENS", "1.5"),
+        ("SCAT_LLM_AUTH", "basic"),
     ],
 )
 def test_invalid_model_disables(name: str, value: str, caplog: pytest.LogCaptureFixture) -> None:
@@ -97,11 +105,13 @@ def test_empty_strings_mean_unset(caplog: pytest.LogCaptureFixture) -> None:
             "SCAT_LLM_BASE_URL": "",
             "SCAT_LLM_TIMEOUT_SECONDS": "",
             "SCAT_LLM_MAX_OUTPUT_TOKENS": "",
+            "SCAT_LLM_AUTH": "",
         }
     )
     assert s is not None
     assert s.base_url == "https://api.anthropic.com"
     assert s.timeout_seconds == LLM_TIMEOUT_SECONDS
+    assert s.anthropic_auth == "x-api-key"
 
 
 def test_prompt_renders_once() -> None:

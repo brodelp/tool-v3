@@ -276,6 +276,7 @@ feature is off until a provider is configured; without one, everything else work
 | `SCAT_LLM_MODEL` | Model name; must match the model pattern of the stage 4 spec (§2.2). |
 | `SCAT_LLM_API_KEY` | Secret. Required for `anthropic`; optional for `openai` (local servers). |
 | `SCAT_LLM_BASE_URL` | Optional. Defaults: `https://api.anthropic.com` and `https://api.openai.com/v1`. Lets `openai` reach Ollama, vLLM, or Azure-style gateways. Must be an `http` or `https` URL with a host (and a valid port); otherwise the feature is off and a warning names the variable. |
+| `SCAT_LLM_AUTH` | Optional; `anthropic` only. `x-api-key` (default) sends the key as `x-api-key`; `bearer` sends `Authorization: Bearer <key>` (the Anthropic SDK's `auth_token`, used by some gateways). Any other value disables the feature. |
 | `SCAT_LLM_TIMEOUT_SECONDS` | Optional; default 600. Models that reason before answering can take minutes on a long narrative. The timeout applies to each read (the wait between bytes), not to the call as a whole. |
 | `SCAT_LLM_MAX_OUTPUT_TOKENS` | Optional; default 32,000. |
 
@@ -292,6 +293,17 @@ Anthropic:
 SCAT_LLM_PROVIDER=anthropic
 SCAT_LLM_MODEL=claude-opus-5-5
 SCAT_LLM_API_KEY=<your key>
+```
+
+An Anthropic-compatible gateway that takes a Bearer token (the SDK's `auth_token`), for example
+an `<access-key>:<secret-key>` pair; `/v1/messages` is appended to the base URL:
+
+```
+SCAT_LLM_PROVIDER=anthropic
+SCAT_LLM_MODEL=<gateway model id>
+SCAT_LLM_API_KEY=<access-key>:<secret-key>
+SCAT_LLM_BASE_URL=https://<gateway host>/<path>/anthropic
+SCAT_LLM_AUTH=bearer
 ```
 
 Ollama on the Windows host, reached from the container (no key):

@@ -11,6 +11,7 @@ import httpx
 from ..config import LLM_MAX_OUTPUT_TOKENS, LLM_TIMEOUT_SECONDS, MODEL_PATTERN
 
 type Provider = Literal["anthropic", "openai"]
+type AnthropicAuth = Literal["x-api-key", "bearer"]
 
 _logger: Final = logging.getLogger("scat_validator.llm")
 _MODEL: Final = re.compile(MODEL_PATTERN)
@@ -18,6 +19,7 @@ _DEFAULT_BASE_URLS: Final[dict[str, str]] = {
     "anthropic": "https://api.anthropic.com",
     "openai": "https://api.openai.com/v1",
 }
+_ANTHROPIC_AUTHS: Final = ("x-api-key", "bearer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +30,9 @@ class LlmSettings:
     base_url: str
     timeout_seconds: float
     max_output_tokens: int
+    # How the key is sent to Anthropic: `x-api-key: <key>`, or `Authorization: Bearer <key>` for
+    # gateways that take the SDK's `auth_token`. Ignored for openai, which always uses Bearer.
+    anthropic_auth: AnthropicAuth = "x-api-key"
 
     @property
     def set_id(self) -> str:
@@ -88,6 +93,10 @@ def load_llm_settings(environ: Mapping[str, str]) -> LlmSettings | None:
     if not _usable_base_url(base_url):
         _disabled("SCAT_LLM_BASE_URL")
         return None
+    anthropic_auth = get("SCAT_LLM_AUTH") or "x-api-key"
+    if anthropic_auth not in _ANTHROPIC_AUTHS:
+        _disabled("SCAT_LLM_AUTH")
+        return None
     timeout: float | None = float(LLM_TIMEOUT_SECONDS)
     raw_timeout = get("SCAT_LLM_TIMEOUT_SECONDS")
     if raw_timeout is not None:
@@ -110,4 +119,5 @@ def load_llm_settings(environ: Mapping[str, str]) -> LlmSettings | None:
         base_url=base_url,
         timeout_seconds=timeout,
         max_output_tokens=tokens,
+        anthropic_auth=anthropic_auth,  # type: ignore[arg-type]
     )

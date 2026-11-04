@@ -256,6 +256,7 @@ its value) is logged once.
 | `SCAT_LLM_MODEL` | Model name; must match the model pattern of §2.2. |
 | `SCAT_LLM_API_KEY` | Secret. Required for `anthropic`; optional for `openai` (local servers). |
 | `SCAT_LLM_BASE_URL` | Optional. Defaults: `https://api.anthropic.com` and `https://api.openai.com/v1`. Lets `openai` reach Ollama, vLLM, or Azure-style gateways. |
+| `SCAT_LLM_AUTH` | Optional; `anthropic` only. `x-api-key` (default) sends the key as `x-api-key`; `bearer` sends `Authorization: Bearer <key>` (the Anthropic SDK's `auth_token`, used by some gateways). Any other value disables the feature. |
 | `SCAT_LLM_TIMEOUT_SECONDS` | Optional; default `LLM_TIMEOUT_SECONDS` (600). Models that reason before answering can take minutes on a long narrative. |
 | `SCAT_LLM_MAX_OUTPUT_TOKENS` | Optional; default `LLM_MAX_OUTPUT_TOKENS` (32,000). |
 
@@ -273,7 +274,7 @@ response stopped by the output limit (`max_tokens`; `length`) is `OUTPUT_TRUNCAT
 
 | Provider | Request |
 | --- | --- |
-| `anthropic` | `POST {base}/v1/messages`, headers `x-api-key`, `anthropic-version: 2026-10-21`; body `model`, `max_tokens`, `messages`. |
+| `anthropic` | `POST {base}/v1/messages`, headers `x-api-key` (or `Authorization: Bearer <key>` when `SCAT_LLM_AUTH=bearer`), `anthropic-version: 2026-10-21`; body `model`, `max_tokens`, `messages`. |
 | `openai` | `POST {base}/chat/completions`, header `Authorization: Bearer <key>` when a key is set; body `model`, `max_tokens`, `messages`. |
 
 #### 5.3 Parsing and the narrative check
