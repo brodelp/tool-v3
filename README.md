@@ -17,7 +17,7 @@ application.
   record's annotations, guarded by a version number. Contract:
   [docs/scat-stage-3-annotation-frontend-spec.md](docs/scat-stage-3-annotation-frontend-spec.md)
   (revision 0.1). Case data still enters only through `POST /api/v1/submissions` (or, with an
-  LLM configured, `POST /api/v1/annotated-submissions`; stage 4 §4.8).
+  LLM configured, `POST /api/v1/annotated-submissions` or its AE-only variant; stage 4 §4.8–§4.9).
 
 > **No authentication.** `username` is an unverified claim: anyone who can reach the service can
 > submit, list, export, annotate, or delete any submission. Use fictional data only; the service is published on
@@ -38,6 +38,7 @@ application.
 | `DELETE /api/v1/submissions/{case_id}/llm-proposals/{proposal_id}?username=…` | Discard a proposal (204) |
 | `DELETE /api/v1/submissions/{case_id}/annotation-sets?username=…&set_id=…` | Remove one `llm` annotation set (`If-Match` required) |
 | `POST /api/v1/annotated-submissions` | Validate one record, annotate its narrative with the configured model, and store both; returns the export (201). Nothing is stored on any failure |
+| `POST /api/v1/annotated-submissions/ae` | The same, but the model is asked only for adverse events: the stored set holds `AE` annotations and records `"label_scope":["AE"]` |
 | `GET /healthz` | Liveness: exactly `{"status":"ok"}` (no database check) |
 | `GET /docs`, `GET /openapi.json` | Interactive documentation and the OpenAPI contract |
 | `GET /` | The annotation frontend (when built; always in the Compose image) |
@@ -336,6 +337,9 @@ review. The response is the stored record's export, including the new `llm` set:
 curl --include --header 'Content-Type: application/json' --data-binary '@examples/valid-record.json' http://localhost:8000/api/v1/annotated-submissions
 ```
 
+To annotate adverse events only, post to `/api/v1/annotated-submissions/ae` instead. Its set has
+the same id as a full run of that model (`llm:<provider>:<model>`), so the two replace each other.
+
 The model must return the narrative unchanged with only tags added; if its output does not
 reproduce the narrative exactly, the run fails rather than guessing, and running it again may
 help.
@@ -389,7 +393,8 @@ unexpected fault or unreachable database logs only its exception type and source
 
 Each LLM call also logs one line: provider, model, status, duration, output length, annotation
 count, reason, and the provider's HTTP status when it answered with a non-2xx response
-(`upstream_status`, for example 401 or 429; `-` otherwise). It describes the provider call, not the final HTTP response, and nothing else
+(`upstream_status`, for example 401 or 429; `-` otherwise), and the prompt scope (`scope=full`,
+or `scope=ae` for the AE-only route). It describes the provider call, not the final HTTP response, and nothing else
 from the call (prompt, narrative, output, URL, key) is logged. The `httpx` and `httpcore` loggers
 are set to WARNING because httpx logs request URLs at INFO.
 

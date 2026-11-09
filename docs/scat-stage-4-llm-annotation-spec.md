@@ -269,6 +269,21 @@ candidate as `source_json`, and version 2, as submit followed by accept would le
 is `201` with `Location` (the export URL), `ETag` `"2"`, and the `SubmissionExport` body of
 stage 2 (the export of the new submission).
 
+#### 4.9 `POST /api/v1/annotated-submissions/ae`
+
+As §4.8 in every step and response, except that the provider is sent the `ae` prompt scope
+(§5.2), which asks only for adverse events, and the set keeps only the labels in
+`LLM_AE_LABELS` (`AE`):
+
+- The output is parsed with every tag of §5.3, so every check there, including the narrative
+  check, covers tags for other labels too. Their spans are then dropped. An output with no `AE`
+  span gives a set with `"annotations":{}`.
+- The set object records the scope as foreign metadata (§2.2), after `generated_at`:
+  `{"kind":"llm","provider":…,"model":…,"generated_at":…,"label_scope":["AE"],"annotations":{…}}`.
+- The set id is still `llm:<provider>:<model>`. So an uploaded set from the same model is replaced
+  (§4.8), and a later §4.3 proposal from that model would replace the AE set (with
+  `replaces_existing_set` true).
+
 ### 5. LLM annotation
 
 #### 5.1 Configuration
@@ -294,7 +309,8 @@ Defaults and limits live in `config.py`. Compose passes the variables through fr
 The prompt is composed from the fragments in `src/scat_validator/llm/prompts/`: the shared
 `intro.md`, the scope's `schema.md`, the shared `in_text_rules.md`, the scope's `examples.md`, and
 the shared `narrative.md`, joined with a blank line. The routes of §4.3 and §4.8 use the `full`
-scope (all 17 tags). The narrative replaces the literal `{text}` in `narrative.md` exactly once
+scope (all 17 tags); §4.9 uses the `ae` scope, whose schema defines AE, lists the concepts that
+are not AEs, and allows only `<AE>`. The narrative replaces the literal `{text}` in `narrative.md` exactly once
 (no other templating). It is sent as one user message with the provider's default sampling (Anthropic API version
 `2026-10-21` rejects `temperature`, so no sampling parameters are sent to either provider). The
 response text is the concatenation of the response's text blocks (Anthropic: `content` blocks of
@@ -369,7 +385,7 @@ internal error (`500`), since the parser cannot produce one.
 ### 7. Logging, privacy, and security
 
 - LLM calls log provider, model, status, duration, output length in code points, annotation
-  count, and failure reason codes. Never the prompt, narrative, model output, API key, base URL
+  count, failure reason codes, and the prompt scope (`full` or `ae`). Never the prompt, narrative, model output, API key, base URL
   credentials, upstream response bodies, or exception messages.
 - With a cloud provider, **narratives leave the service** and are processed by that provider
   under its terms. The service remains loopback-published (stage 2 §6); the outbound call is the
@@ -398,6 +414,7 @@ internal error (`500`), since the parser cannot produce one.
 | L13 | Frontend: source tabs, read-only LLM sets, progress and cancel, proposal accept/discard, replacement notice, errors. |
 | L14 | Logs and the browser console never contain identities, narratives, outputs, or secrets. |
 | L15 | Annotated submission (§4.8): step order and failures, nothing stored on failure, byte-exact splice, version 2 with the upload as original, race, OpenAPI. |
+| L16 | AE-only annotated submission (§4.9): the `ae` prompt is sent, only `AE` spans are stored, `label_scope`, other tags still checked, empty set, replacement of a same-model set, §4.8 steps, logs, OpenAPI. Prompt scopes share their fragments and name only their own tags. |
 
 ### 9. Open questions for the formal application
 

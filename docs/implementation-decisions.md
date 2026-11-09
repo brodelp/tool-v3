@@ -375,3 +375,15 @@ Choices the stage 4 spec and design leave open:
   row indistinguishable from submit-then-accept. The route is a superset of submit, so it keeps
   submit's `RequestFailure` envelope for every failure, including the LLM codes. It shares the
   provider concurrency limit with the proposal route.
+- **AE-only annotated submission (§4.9).** The prompt is split into fragments rather than given a
+  second full copy, so the two scopes cannot drift apart in the narrative and output rules; the
+  full scope still renders the earlier `prompt.md` byte for byte. The AE prompt keeps the full
+  prompt's AE definition and lists the concepts that are not AEs, so an AE-only run labels what
+  the full scheme would label AE. Tags outside the scope are dropped rather than rejected: the
+  narrative check still covers them, so the AE spans are as trustworthy as in a full run, and a
+  model that over-tags still yields a usable result. The set id stays `llm:<provider>:<model>`
+  (the spec ties ids to provider and model; a scope in the id would mean changing the id
+  pattern, validation, and the frontend), and `label_scope` records the scope as foreign
+  metadata, so a reader can tell an AE-only set from a full run that found only AEs. The cost is
+  that the two scopes from one model replace each other. The route has no frontend use, like
+  §4.8.
