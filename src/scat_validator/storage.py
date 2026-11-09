@@ -219,6 +219,33 @@ class Storage:
             submitted_at: datetime | None = connection.execute(statement).scalar_one_or_none()
         return submitted_at
 
+    def insert_annotated(
+        self, case_id: str, username: str, original_json: str, source_json: str
+    ) -> SubmissionVersion | None:
+        """Store a new submission already updated once: ``original_json`` as submitted and
+        ``source_json`` with an LLM set added, at version 2, as submitting and then accepting a
+        proposal would leave it. ``None`` when ``(case_id, username)`` already exists."""
+        statement = (
+            insert(submissions)
+            .values(
+                case_id=case_id,
+                username=username,
+                source_json=source_json,
+                original_json=original_json,
+                version=2,
+            )
+            .on_conflict_do_nothing(index_elements=["case_id", "username"])
+            .returning(
+                submissions.c.case_id,
+                submissions.c.submitted_at,
+                submissions.c.updated_at,
+                submissions.c.version,
+            )
+        )
+        with self.engine.begin() as connection:
+            row = connection.execute(statement).one_or_none()
+        return None if row is None else SubmissionVersion(*row)
+
     def fetch(self, case_id: str, username: str) -> StoredSubmission | None:
         statement = select(
             submissions.c.case_id,
