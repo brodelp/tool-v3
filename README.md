@@ -16,7 +16,8 @@ application.
   saves annotations made by selecting text and choosing a label. Saving replaces the stored
   record's annotations, guarded by a version number. Contract:
   [docs/scat-stage-3-annotation-frontend-spec.md](docs/scat-stage-3-annotation-frontend-spec.md)
-  (revision 0.1). Case data still enters only through `POST /api/v1/submissions`.
+  (revision 0.1). Case data still enters only through `POST /api/v1/submissions` (or, with an
+  LLM configured, `POST /api/v1/annotated-submissions`; stage 4 §4.8).
 
 > **No authentication.** `username` is an unverified claim: anyone who can reach the service can
 > submit, list, export, annotate, or delete any submission. Use fictional data only; the service is published on
@@ -36,6 +37,7 @@ application.
 | `POST /api/v1/submissions/{case_id}/llm-proposals/{proposal_id}/accept?username=…` | Store the proposal as an `llm` annotation set (`If-Match` required; 412 if the version changed) |
 | `DELETE /api/v1/submissions/{case_id}/llm-proposals/{proposal_id}?username=…` | Discard a proposal (204) |
 | `DELETE /api/v1/submissions/{case_id}/annotation-sets?username=…&set_id=…` | Remove one `llm` annotation set (`If-Match` required) |
+| `POST /api/v1/annotated-submissions` | Validate one record, annotate its narrative with the configured model, and store both; returns the export (201). Nothing is stored on any failure |
 | `GET /healthz` | Liveness: exactly `{"status":"ok"}` (no database check) |
 | `GET /docs`, `GET /openapi.json` | Interactive documentation and the OpenAPI contract |
 | `GET /` | The annotation frontend (when built; always in the Compose image) |
@@ -325,6 +327,13 @@ Verify the configuration (secrets are never shown):
 
 ```bash
 curl -s http://localhost:8000/api/v1/llm
+```
+
+Submit a record and have the model annotate it in one request, without the frontend's proposal
+review. The response is the stored record's export, including the new `llm` set:
+
+```bash
+curl --include --header 'Content-Type: application/json' --data-binary '@examples/valid-record.json' http://localhost:8000/api/v1/annotated-submissions
 ```
 
 The model must return the narrative unchanged with only tags added; if its output does not

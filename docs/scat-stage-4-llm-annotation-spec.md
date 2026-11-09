@@ -242,6 +242,33 @@ is as §4.4 steps 3, 6, and 9.
 Unchanged: the export's `record` is the current `source_json`, so every set and its provenance
 are exported with the record.
 
+#### 4.8 `POST /api/v1/annotated-submissions`
+
+Submits one record and stores it with the configured LLM's set in one request, for clients that
+do not review proposals (scripts and integrations; the frontend does not use it). The effect is
+that of stage 2 §3.1, §4.3, and §4.4 in sequence, except that **nothing is stored unless every
+step succeeds** and no proposal row is created. Request body and gates are those of
+`POST /api/v1/submissions` (no query parameters). Every failure is a single-mode
+`RequestFailure`, as for submit.
+
+| Step | Failure | Status, code |
+| --- | --- | --- |
+| 1–6. Submit gates and validation | as stage 2 §3.1 | 400, 413, 415, 422 `RequestFailure` or `ValidationReport` |
+| 7. Configuration | | 503 `LLM_NOT_CONFIGURED` |
+| 8. Narrative | §4.3 steps 5–6 | 422 `NARRATIVE_TOO_LONG`, `NARRATIVE_HAS_MARKUP` |
+| 9. Storage | | 503 `STORAGE_UNAVAILABLE` |
+| 10. Existing submission | `(case_id, username)` already stored (checked before the provider call) | 409 `ALREADY_SUBMITTED` |
+| 11. Provider call and output | §4.3 steps 7–9 | 504 `LLM_TIMEOUT`, 502 `LLM_UNAVAILABLE`, 502 `LLM_OUTPUT_INVALID` |
+| 12. Candidate size | over 5 MiB | 422 `INVALID_DOCUMENT`, `LIMIT_EXCEEDED` at `/annotation_sets` |
+| 13. Validation | the stage 1 report for the candidate | 422 `ValidationReport` |
+| 14. Store | submitted meanwhile | 409 `ALREADY_SUBMITTED` |
+
+The candidate is built from the uploaded text as §4.4 builds it from the stored text, so a set
+with the same id in the upload is replaced. The row stores the upload as `original_json`, the
+candidate as `source_json`, and version 2, as submit followed by accept would leave it. Success
+is `201` with `Location` (the export URL), `ETag` `"2"`, and the `SubmissionExport` body of
+stage 2 (the export of the new submission).
+
 ### 5. LLM annotation
 
 #### 5.1 Configuration
@@ -367,6 +394,7 @@ internal error (`500`), since the parser cannot produce one.
 | L12 | OpenAPI documents the new and changed operations and schemas; runtime responses conform. |
 | L13 | Frontend: source tabs, read-only LLM sets, progress and cancel, proposal accept/discard, replacement notice, errors. |
 | L14 | Logs and the browser console never contain identities, narratives, outputs, or secrets. |
+| L15 | Annotated submission (§4.8): step order and failures, nothing stored on failure, byte-exact splice, version 2 with the upload as original, race, OpenAPI. |
 
 ### 9. Open questions for the formal application
 

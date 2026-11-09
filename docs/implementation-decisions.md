@@ -367,3 +367,11 @@ Choices the stage 4 spec and design leave open:
   arrow keys don't page.
 - **OpenAPI examples.** FastAPI drops `null` from examples, so `custom_openapi` copies response
   examples back from each route's `openapi_extra`.
+- **Annotated submission (§4.8).** The provider runs before anything is stored, so a failed run
+  leaves no submission behind (the alternative, storing first, would leave a half-done record
+  that blocks a retry with 409). The narrative is checked before storage, as validation is for
+  submit. The 409 pre-check before the provider call avoids spending a call on a duplicate; the
+  insert's `ON CONFLICT` still decides. Version 2 with the upload as `original_json` keeps the
+  row indistinguishable from submit-then-accept. The route is a superset of submit, so it keeps
+  submit's `RequestFailure` envelope for every failure, including the LLM codes. It shares the
+  provider concurrency limit with the proposal route.
