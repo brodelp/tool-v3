@@ -696,3 +696,74 @@ def test_runtime_llm_responses_conform(
     assert absent.json() == examples_for(sets_op, "404")["set_not_found"]["value"]
     for response in (not_found, altered, unavailable, timed_out, bad_id, again, gone, absent):
         SUBMISSION_FAILURE_ADAPTER.validate_json(response.body, strict=True)
+
+
+# ---------------------------------------------------------------- stage 4 annotated submissions
+
+ANNOTATED_SUBMISSIONS = "/api/v1/annotated-submissions"
+
+
+def test_annotated_submission_is_documented(spec: dict[str, Any]) -> None:
+    post = spec["paths"][ANNOTATED_SUBMISSIONS]["post"]
+    assert post["parameters"] == []
+    assert post["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/Record"
+    }
+    statuses = {"201", "400", "409", "413", "415", "422", "500", "502", "503", "504"}
+    assert set(post["responses"]) == statuses
+    created = post["responses"]["201"]
+    assert {"Location", "ETag"} <= set(created["headers"])
+    assert created["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/SubmissionExport"
+    }
+    for status in statuses - {"201", "422"}:
+        schema = post["responses"][status]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/RequestFailure"}
+    for response in post["responses"].values():
+        assert response["headers"]["Cache-Control"]["schema"]["enum"] == ["no-store"]
+    adapters = (REQUEST_FAILURE_ADAPTER, VALIDATION_REPORT_ADAPTER)
+    for status in ("422", "502", "503", "504"):
+        for example in examples_for(post, status).values():
+            matches = 0
+            for adapter in adapters:
+                try:
+                    adapter.validate_json(json.dumps(example["value"]), strict=True)
+                except ValidationError:
+                    continue
+                matches += 1
+            assert matches == 1, (status, example)
+    assert "no authentication" in post["description"]
+
+
+def test_annotated_submission_examples_match_runtime(
+    spec: dict[str, Any], storage: Storage, llm: Callable[[Any], Any]
+) -> None:
+    post = spec["paths"][ANNOTATED_SUBMISSIONS]["post"]
+    request = post["requestBody"]["content"]["application/json"]["examples"]["minimal_record"]
+    body = dumps(request["value"])
+
+    def post_record() -> Any:
+        return call("POST", ANNOTATED_SUBMISSIONS, body=body).json()
+
+    llm("unused")
+    app.state.llm_settings = None  # the fixture restores it
+    assert post_record() == examples_for(post, "503")["not_configured"]["value"]
+    llm("Aspirin caused nausea!")
+    assert post_record() == examples_for(post, "502")["narrative_altered"]["value"]
+    llm(lambda request: httpx.Response(503))
+    assert post_record() == examples_for(post, "502")["provider_unavailable"]["value"]
+
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out", request=request)
+
+    llm(timeout)
+    assert post_record() == examples_for(post, "504")["timeout"]["value"]
+    markup = dumps(request["value"] | {"narrative": "Aspirin <AE> nausea."})
+    marked = call("POST", ANNOTATED_SUBMISSIONS, body=markup).json()
+    assert marked == examples_for(post, "422")["narrative_has_markup"]["value"]
+
+    llm("<SDRUG>Aspirin</SDRUG> caused nausea.")
+    created = call("POST", ANNOTATED_SUBMISSIONS, body=body)
+    assert created.status == 201
+    timestamps = {name: created.json()[name] for name in ("submitted_at", "updated_at")}
+    assert created.json() == examples_for(post, "201")["annotated"]["value"] | timestamps

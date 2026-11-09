@@ -1015,6 +1015,87 @@ def proposal_operation_extra() -> dict[str, Any]:
     }
 
 
+EXAMPLE_ANNOTATED_SUBMISSION: Final[dict[str, Any]] = {
+    **EXAMPLE_EXPORT,
+    "version": 2,
+    "record": {**EXAMPLE_RECORD, "annotation_sets": {EXAMPLE_SET_ID: EXAMPLE_LLM_SET}},
+}
+
+
+def _single_failure_example(code: Any, issues: list[Any] | None = None) -> dict[str, Any]:
+    return _failure_example("single", code, ERROR_MESSAGES[code], issues or [])
+
+
+_ANNOTATED_SUBMIT_DESCRIPTION: Final = f"""
+Submits one record, runs the configured LLM on its narrative, and stores the record with the
+LLM's set in one request: `POST /api/v1/submissions`, then `POST .../llm-proposals`, then
+`.../accept`, without a proposal to review. Nothing is stored unless every step succeeds.
+
+The set `llm:<provider>:<model>` is added to `annotation_sets` byte for byte (replacing a set
+with that id in the upload, or creating `annotation_sets` after the record's last member). The
+submission is stored at version 2: its original record is the upload, and its current record has
+the set, as the three requests would leave it. The response is the export of the stored
+submission.
+
+With a cloud provider the narrative leaves the service and is processed by that provider. One
+call per request, without retries; a call can take minutes.
+
+Order: the gates and validation of `POST /api/v1/submissions` (no query parameters; 422
+ValidationReport for an invalid record); configuration (503 `LLM_NOT_CONFIGURED`); narrative longer
+than {MAX_LLM_NARRATIVE_CODE_POINTS} code points (422 `NARRATIVE_TOO_LONG`); narrative containing
+tag markup such as `<AE>` (422 `NARRATIVE_HAS_MARKUP`); storage (503 `STORAGE_UNAVAILABLE`); an
+existing `(case_id, username)` (409 `ALREADY_SUBMITTED`, before the provider is called); provider
+timeout (504 `LLM_TIMEOUT`); provider connection failure, non-2xx, or malformed response (502
+`LLM_UNAVAILABLE`); unusable output (502 `LLM_OUTPUT_INVALID` with one issue at `location`
+`llm_output`); annotated-record size (at most {MAX_BODY_BYTES} bytes, 422 `LIMIT_EXCEEDED` at
+`/annotation_sets`); validation of the annotated record (422 ValidationReport); store (409 if the
+pair was submitted meanwhile). Every failure is a `RequestFailure`.
+
+{_NO_AUTH_NOTE}
+"""
+
+
+def annotated_submit_operation_extra() -> dict[str, Any]:
+    extra = submit_operation_extra()
+    responses = extra["responses"]
+    responses["201"] = _response(
+        "Valid, annotated by the LLM, and stored: the export of the new submission.",
+        "SubmissionExport",
+        {"annotated": EXAMPLE_ANNOTATED_SUBMISSION},
+        extra_headers=_LOCATION_HEADER | _ETAG_HEADER,
+    )
+    responses["422"]["content"]["application/json"]["examples"]["narrative_has_markup"] = {
+        "value": _single_failure_example("NARRATIVE_HAS_MARKUP")
+    }
+    failure = "RequestFailure"
+    responses["502"] = _response(
+        "`LLM_UNAVAILABLE`, or `LLM_OUTPUT_INVALID` with one issue at `llm_output`: "
+        "`OUTPUT_TRUNCATED`, `MODEL_REFUSED`, `UNBALANCED_TAG`, `NESTED_TAG`, `EMPTY_TAG`, or "
+        "`NARRATIVE_ALTERED`.",
+        failure,
+        {
+            "provider_unavailable": _single_failure_example("LLM_UNAVAILABLE"),
+            "narrative_altered": _single_failure_example(
+                "LLM_OUTPUT_INVALID",
+                [_issue("llm_output", "", "NARRATIVE_ALTERED", Msg.NARRATIVE_ALTERED)],
+            ),
+        },
+    )
+    responses["503"] = _response(
+        "`LLM_NOT_CONFIGURED`, or `STORAGE_UNAVAILABLE`.",
+        failure,
+        {
+            "not_configured": _single_failure_example("LLM_NOT_CONFIGURED"),
+            "storage_unavailable": _single_failure_example("STORAGE_UNAVAILABLE"),
+        },
+    )
+    responses["504"] = _response(
+        "`LLM_TIMEOUT`.", failure, {"timeout": _single_failure_example("LLM_TIMEOUT")}
+    )
+    extra["description"] = _ANNOTATED_SUBMIT_DESCRIPTION + _LIMITS_DESCRIPTION
+    return extra
+
+
 def _validated_update_responses(ok_description: str, ok_example: dict[str, Any]) -> dict[str, Any]:
     """200, 412, 422 (ValidationReport or SubmissionFailure), and 428 of a record update."""
     return {

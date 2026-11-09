@@ -6,7 +6,7 @@ tested directly and reused by a later ingestion design.
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Final
 from urllib.parse import quote
@@ -45,6 +45,7 @@ from scat_validator.validation import ValueProblem, case_id_problem, username_pr
 from scat_validator.wire import contains_forbidden_code_point
 
 SUBMISSIONS_ROUTE: Final = "/api/v1/submissions"
+ANNOTATED_SUBMISSIONS_ROUTE: Final = "/api/v1/annotated-submissions"
 SUBMISSION_ROUTE: Final = SUBMISSIONS_ROUTE + "/{case_id}"
 USER_SET_ROUTE: Final = SUBMISSION_ROUTE + "/annotation-sets/user"
 LLM_ROUTE: Final = "/api/v1/llm"
@@ -263,6 +264,12 @@ def serialize_export(stored: StoredSubmission) -> Outcome:
     if len(body) > MAX_RESPONSE_BYTES:
         raise ResponseBudgetExceeded
     return Outcome(200, body, 1, 0, etag=entity_tag(stored.version))
+
+
+def serialize_annotated_submission(stored: StoredSubmission) -> Outcome:
+    """A submission stored with its LLM set (201): the export envelope, with the export URL."""
+    location = export_location(stored.case_id, stored.username)
+    return replace(serialize_export(stored), status=201, location=location)
 
 
 def serialize_update(

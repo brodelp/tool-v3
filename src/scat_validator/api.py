@@ -3,7 +3,8 @@
 Stage 1 routes validate only. Stage 2 submission routes add storage (stage 2 spec §3) and stage 3
 adds listing and annotation updates (stage 3 spec §3); they are the only code that touches the
 database, and the validation routes work without it. Stage 4 adds annotation sets and LLM
-proposals (stage 4 spec §4); the LLM status route is database-free. A built frontend, when
+proposals (stage 4 spec §4); the LLM status route is database-free, and one route submits a record
+already annotated by the LLM, without a proposal to review (§4.8). A built frontend, when
 configured, is served at ``/`` after every API route (stage 3 spec §6).
 """
 
@@ -56,6 +57,7 @@ from scat_validator.llm.settings import LlmSettings, load_llm_settings
 from scat_validator.llm.tags import OutputInvalid, OutputReason, contains_markup
 from scat_validator.openapi_docs import (
     accept_operation_extra,
+    annotated_submit_operation_extra,
     component_schemas,
     delete_operation_extra,
     discard_operation_extra,
@@ -78,9 +80,10 @@ from scat_validator.reporting import (
     serialize_failure,
     serialize_report,
 )
-from scat_validator.storage import UNAVAILABLE_ERRORS, Storage
+from scat_validator.storage import UNAVAILABLE_ERRORS, Storage, StoredSubmission
 from scat_validator.submissions import (
     ACCEPT_ROUTE,
+    ANNOTATED_SUBMISSIONS_ROUTE,
     LLM_ROUTE,
     PROPOSAL_ROUTE,
     PROPOSALS_ROUTE,
@@ -93,6 +96,7 @@ from scat_validator.submissions import (
     parse_proposal_identity,
     parse_set_removal,
     parse_username,
+    serialize_annotated_submission,
     serialize_export,
     serialize_list,
     serialize_llm_status,
@@ -433,6 +437,11 @@ def parse_update_body(body: bytes) -> str | Outcome:
 
 
 type FailureOf = Callable[[ErrorCode, IssueCollector | None], Outcome]
+
+
+def single_failure(code: ErrorCode, issues: IssueCollector | None = None) -> Outcome:
+    """A ``RequestFailure`` of a route that takes one record as its body."""
+    return serialize_failure(request_failure("single", code, issues))
 
 
 def evaluate_candidate(
@@ -862,6 +871,76 @@ async def _remove_set(request: Request) -> Outcome:
     return serialize_update(report, identity, saved)
 
 
+async def _submit_annotated(request: Request) -> Outcome:
+    """Submit (stage 2 §3.1), propose (stage 4 §4.3), and accept (§4.4) in one request (§4.8),
+    storing nothing unless every step succeeds. Failures are ``RequestFailure``s, as submit's."""
+    body = await _read_body(request, _request_failure("single"))
+    if isinstance(body, Outcome):
+        return body
+    evaluation = await run_in_threadpool(
+        evaluate_document, "single", body, _query_string(request), echo_allowed=False
+    )
+    if isinstance(evaluation, Outcome):
+        return evaluation
+    if not evaluation.report["valid"]:
+        return serialize_report(evaluation.report, None)
+    state = request.app.state
+    settings: LlmSettings | None = state.llm_settings
+    if settings is None:
+        return single_failure("LLM_NOT_CONFIGURED")
+    source_json = evaluation.document_bytes.decode("utf-8")
+    narrative = await run_in_threadpool(_narrative, source_json)
+    problem = _narrative_problem(narrative)
+    if problem is not None:
+        return single_failure(problem)
+    storage = _storage(request)
+    if storage is None:
+        return single_failure("STORAGE_UNAVAILABLE")
+    observation = evaluation.report["records"][0]
+    case_id, username = observation["case_id"], observation["username"]
+    assert case_id is not None and username is not None  # a valid record observes both
+    try:
+        # Checked before the provider call so a repeat does not spend one; the insert decides.
+        if await run_in_threadpool(storage.fetch, case_id, username) is not None:
+            return single_failure("ALREADY_SUBMITTED")
+        proposed = await anyio.to_thread.run_sync(
+            _run_llm,
+            settings,
+            narrative,
+            state.llm_client,
+            state.clock,
+            single_failure,
+            limiter=_llm_limiter(),
+        )
+        if isinstance(proposed, Outcome):
+            return proposed
+        set_id, set_json = proposed.set_id, proposed.set_json
+        annotated = await run_in_threadpool(
+            evaluate_candidate,
+            source_json,
+            lambda text: with_set(text, set_id, set_json),
+            ANNOTATION_SETS_FIELD,
+            single_failure,
+        )
+        if isinstance(annotated, Outcome):
+            return annotated
+        report, candidate = annotated
+        if not report["valid"]:
+            return serialize_report(report, None)
+        saved = await run_in_threadpool(
+            storage.insert_annotated, case_id, username, source_json, candidate
+        )
+    except UNAVAILABLE_ERRORS as exc:
+        _log_fault(exc, logging.WARNING, "storage unavailable")
+        return single_failure("STORAGE_UNAVAILABLE")
+    if saved is None:  # submitted by another request while the provider ran
+        return single_failure("ALREADY_SUBMITTED")
+    stored = StoredSubmission(
+        case_id, username, candidate, saved.submitted_at, saved.updated_at, saved.version
+    )
+    return serialize_annotated_submission(stored)
+
+
 async def _llm_status(request: Request) -> Outcome:
     rejected = await _require_empty_body(request)
     if rejected is not None:
@@ -911,6 +990,21 @@ async def discard_llm_proposal(request: Request) -> Response:
 )
 async def remove_llm_set(request: Request) -> Response:
     return await _submission_response("DELETE", SETS_ROUTE, lambda: _remove_set(request))
+
+
+@app.post(
+    ANNOTATED_SUBMISSIONS_ROUTE,
+    openapi_extra=annotated_submit_operation_extra(),
+    summary="Store one record annotated by the LLM",
+    status_code=201,
+)
+async def submit_annotated(request: Request) -> Response:
+    return await _respond(
+        "POST",
+        ANNOTATED_SUBMISSIONS_ROUTE,
+        lambda: _submit_annotated(request),
+        lambda: single_failure("INTERNAL_ERROR"),
+    )
 
 
 def _restore_response_examples(schema: dict[str, Any]) -> None:
