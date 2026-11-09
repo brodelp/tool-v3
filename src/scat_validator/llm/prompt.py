@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from importlib.resources import files
 from typing import Final
 
+from ..config import LLM_AE_LABELS
+
 PLACEHOLDER: Final = "{text}"
 
 _PROMPTS: Final = files("scat_validator.llm").joinpath("prompts")
@@ -41,6 +43,7 @@ class PromptScope:
 
 
 FULL_SCOPE: Final = PromptScope("full", None)
+AE_SCOPE: Final = PromptScope("ae", LLM_AE_LABELS)
 
 
 def render_prompt(narrative: str, scope: PromptScope = FULL_SCOPE) -> str:

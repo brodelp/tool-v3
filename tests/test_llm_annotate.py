@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from scat_validator.llm.annotate import annotate
+from scat_validator.llm.prompt import AE_SCOPE
 from scat_validator.llm.providers import ProviderUnavailable
 from scat_validator.llm.settings import LlmSettings
 from scat_validator.llm.tags import OutputInvalid
@@ -62,3 +63,43 @@ def test_provider_error_propagates() -> None:
     c = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
     with pytest.raises(ProviderUnavailable):
         annotate(S, "a", c, lambda: NOW)
+
+
+def test_ae_scope_sends_the_ae_prompt_and_keeps_only_ae() -> None:
+    narrative = "Took aspirin; rash"
+    out = "Took <SDRUG>aspirin</SDRUG>; <AE>rash</AE>"
+    prompts: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        prompts.append(request.read().decode())
+        body = {"content": [{"type": "text", "text": out}], "stop_reason": "end_turn"}
+        return httpx.Response(200, json=body)
+
+    c = httpx.Client(transport=httpx.MockTransport(handle))
+    p = annotate(S, narrative, c, lambda: NOW, AE_SCOPE)
+    assert p.set_id == "llm:anthropic:m1"
+    assert p.annotation_count == 1
+    assert p.annotations_by_label == {"AE": 1}
+    assert p.set_json == (
+        '{"kind":"llm","provider":"anthropic","model":"m1",'
+        '"generated_at":"2026-10-29T12:30:05.000120Z","label_scope":["AE"],"annotations":{'
+        '"AE":[{"text":"rash","start":14,"end":18}]}}'
+    )
+    (prompt,) = prompts
+    assert "Use ONLY this tag" in prompt
+    assert "<SDRUG>" not in prompt
+
+
+def test_ae_scope_still_checks_the_whole_output() -> None:
+    with pytest.raises(OutputInvalid) as e:
+        annotate(S, "a b", client("<SDRUG>a</SDRUG> c"), lambda: NOW, AE_SCOPE)
+    assert e.value.reason == "NARRATIVE_ALTERED"
+    with pytest.raises(OutputInvalid) as e:
+        annotate(S, "a b", client("<SDRUG>a b"), lambda: NOW, AE_SCOPE)
+    assert e.value.reason == "UNBALANCED_TAG"
+
+
+def test_ae_scope_without_events_is_an_empty_set() -> None:
+    p = annotate(S, "a", client("<DOSE>a</DOSE>"), lambda: NOW, AE_SCOPE)
+    assert p.annotation_count == 0
+    assert p.set_json.endswith('"label_scope":["AE"],"annotations":{}}')

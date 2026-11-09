@@ -109,6 +109,9 @@ LLM_TAGS: Final[dict[str, str]] = {
     "SEX": "Sex",
 }
 assert set(LLM_TAGS.values()) <= set(LABELS)
+# Labels an AE-only run keeps (spec §4.9); its set records them as `label_scope`.
+LLM_AE_LABELS: Final = ("AE",)
+assert set(LLM_AE_LABELS) <= set(LLM_TAGS.values())
 
 # Per-record checks in reporting order (spec §6.4).
 CHECKS: Final = (

@@ -11,7 +11,7 @@ from ..diagnostics import InventoryCollector, IssueCollector
 from ..paths import PathNode
 from ..validation import validate_record
 from ..wire import decode_document
-from .prompt import render_prompt
+from .prompt import FULL_SCOPE, PromptScope, render_prompt
 from .providers import complete
 from .settings import LlmSettings
 from .tags import OutputInvalid, parse_tagged
@@ -35,8 +35,9 @@ def annotate(
     narrative: str,
     client: httpx.Client,
     now: Callable[[], datetime],
+    scope: PromptScope = FULL_SCOPE,
 ) -> ProposedSet:
-    completion = complete(settings, render_prompt(narrative), client)
+    completion = complete(settings, render_prompt(narrative, scope), client)
     try:
         if completion.stop == "truncated":
             raise OutputInvalid("OUTPUT_TRUNCATED")
@@ -46,16 +47,20 @@ def annotate(
     except OutputInvalid as invalid:
         invalid.output_code_points = len(completion.text)
         raise
+    if scope.labels is not None:  # tags outside the scope passed the narrative check; drop them
+        spans = {label: v for label, v in spans.items() if label in scope.labels}
     generated_at = now().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    annotation_set = {
+    annotation_set: dict[str, object] = {
         "kind": "llm",
         "provider": settings.provider,
         "model": settings.model,
         "generated_at": generated_at,
-        "annotations": {
-            label: [{"text": narrative[s:e], "start": s, "end": e} for s, e in items]
-            for label, items in spans.items()
-        },
+    }
+    if scope.labels is not None:  # foreign set metadata (spec §2.2): what the run looked for
+        annotation_set["label_scope"] = list(scope.labels)
+    annotation_set["annotations"] = {
+        label: [{"text": narrative[s:e], "start": s, "end": e} for s, e in items]
+        for label, items in spans.items()
     }
     set_json = _dumps(annotation_set)
     _self_check(settings.set_id, narrative, set_json)
