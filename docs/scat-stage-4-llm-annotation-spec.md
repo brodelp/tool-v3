@@ -291,8 +291,11 @@ Defaults and limits live in `config.py`. Compose passes the variables through fr
 
 #### 5.2 Prompt and call
 
-The prompt is `src/scat_validator/llm/prompt.md`. The narrative replaces the literal `{text}`
-exactly once (no other templating). It is sent as one user message with the provider's default sampling (Anthropic API version
+The prompt is composed from the fragments in `src/scat_validator/llm/prompts/`: the shared
+`intro.md`, the scope's `schema.md`, the shared `in_text_rules.md`, the scope's `examples.md`, and
+the shared `narrative.md`, joined with a blank line. The routes of §4.3 and §4.8 use the `full`
+scope (all 17 tags). The narrative replaces the literal `{text}` in `narrative.md` exactly once
+(no other templating). It is sent as one user message with the provider's default sampling (Anthropic API version
 `2026-10-21` rejects `temperature`, so no sampling parameters are sent to either provider). The
 response text is the concatenation of the response's text blocks (Anthropic: `content` blocks of
 type `text`, ignoring thinking blocks; OpenAI-compatible: `choices[0].message.content`). A
