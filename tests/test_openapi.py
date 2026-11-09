@@ -701,10 +701,17 @@ def test_runtime_llm_responses_conform(
 # ---------------------------------------------------------------- stage 4 annotated submissions
 
 ANNOTATED_SUBMISSIONS = "/api/v1/annotated-submissions"
+AE_ANNOTATED_SUBMISSIONS = ANNOTATED_SUBMISSIONS + "/ae"
+# Route, and an output that yields the documented 201 example (stage 4 §4.8, §4.9).
+ANNOTATED_ROUTES = [
+    (ANNOTATED_SUBMISSIONS, "<SDRUG>Aspirin</SDRUG> caused nausea."),
+    (AE_ANNOTATED_SUBMISSIONS, "<SDRUG>Aspirin</SDRUG> caused <AE>nausea</AE>."),
+]
 
 
-def test_annotated_submission_is_documented(spec: dict[str, Any]) -> None:
-    post = spec["paths"][ANNOTATED_SUBMISSIONS]["post"]
+@pytest.mark.parametrize("route", [ANNOTATED_SUBMISSIONS, AE_ANNOTATED_SUBMISSIONS])
+def test_annotated_submission_is_documented(spec: dict[str, Any], route: str) -> None:
+    post = spec["paths"][route]["post"]
     assert post["parameters"] == []
     assert post["requestBody"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/Record"
@@ -735,15 +742,16 @@ def test_annotated_submission_is_documented(spec: dict[str, Any]) -> None:
     assert "no authentication" in post["description"]
 
 
+@pytest.mark.parametrize(("route", "output"), ANNOTATED_ROUTES)
 def test_annotated_submission_examples_match_runtime(
-    spec: dict[str, Any], storage: Storage, llm: Callable[[Any], Any]
+    spec: dict[str, Any], storage: Storage, llm: Callable[[Any], Any], route: str, output: str
 ) -> None:
-    post = spec["paths"][ANNOTATED_SUBMISSIONS]["post"]
+    post = spec["paths"][route]["post"]
     request = post["requestBody"]["content"]["application/json"]["examples"]["minimal_record"]
     body = dumps(request["value"])
 
     def post_record() -> Any:
-        return call("POST", ANNOTATED_SUBMISSIONS, body=body).json()
+        return call("POST", route, body=body).json()
 
     llm("unused")
     app.state.llm_settings = None  # the fixture restores it
@@ -759,11 +767,20 @@ def test_annotated_submission_examples_match_runtime(
     llm(timeout)
     assert post_record() == examples_for(post, "504")["timeout"]["value"]
     markup = dumps(request["value"] | {"narrative": "Aspirin <AE> nausea."})
-    marked = call("POST", ANNOTATED_SUBMISSIONS, body=markup).json()
+    marked = call("POST", route, body=markup).json()
     assert marked == examples_for(post, "422")["narrative_has_markup"]["value"]
 
-    llm("<SDRUG>Aspirin</SDRUG> caused nausea.")
-    created = call("POST", ANNOTATED_SUBMISSIONS, body=body)
+    llm(output)
+    created = call("POST", route, body=body)
     assert created.status == 201
     timestamps = {name: created.json()[name] for name in ("submitted_at", "updated_at")}
     assert created.json() == examples_for(post, "201")["annotated"]["value"] | timestamps
+
+
+def test_ae_annotated_submission_describes_its_scope(spec: dict[str, Any]) -> None:
+    post = spec["paths"][AE_ANNOTATED_SUBMISSIONS]["post"]
+    assert '"label_scope": ["AE"]' in post["description"]
+    full = spec["paths"][ANNOTATED_SUBMISSIONS]["post"]["description"]
+    assert "label_scope" not in full
+    # Everything after the first paragraph is shared.
+    assert post["description"].split("\n\n", 1)[1] == full.split("\n\n", 1)[1]

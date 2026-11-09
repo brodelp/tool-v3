@@ -52,11 +52,13 @@ from scat_validator.http_gates import (
     parse_query,
 )
 from scat_validator.llm.annotate import ProposedSet, annotate
+from scat_validator.llm.prompt import AE_SCOPE, FULL_SCOPE, PromptScope
 from scat_validator.llm.providers import ProviderTimeout, ProviderUnavailable, new_client
 from scat_validator.llm.settings import LlmSettings, load_llm_settings
 from scat_validator.llm.tags import OutputInvalid, OutputReason, contains_markup
 from scat_validator.openapi_docs import (
     accept_operation_extra,
+    ae_annotated_submit_operation_extra,
     annotated_submit_operation_extra,
     component_schemas,
     delete_operation_extra,
@@ -83,6 +85,7 @@ from scat_validator.reporting import (
 from scat_validator.storage import UNAVAILABLE_ERRORS, Storage, StoredSubmission
 from scat_validator.submissions import (
     ACCEPT_ROUTE,
+    AE_ANNOTATED_SUBMISSIONS_ROUTE,
     ANNOTATED_SUBMISSIONS_ROUTE,
     LLM_ROUTE,
     PROPOSAL_ROUTE,
@@ -596,12 +599,13 @@ def _log_llm(
     output_code_points: int | None,
     annotation_count: int | None,
     reason: str | None,
-    upstream_status: int | None = None,
+    upstream_status: int | None,
+    scope: str,
 ) -> None:
     # Configuration and counts only: never the prompt, narrative, output, key, or base URL.
     logger.info(
         "llm provider=%s model=%s status=%d duration_ms=%.1f output_code_points=%s "
-        "annotations=%s reason=%s upstream_status=%s",
+        "annotations=%s reason=%s upstream_status=%s scope=%s",
         provider,
         model,
         status,
@@ -610,6 +614,7 @@ def _log_llm(
         "-" if annotation_count is None else annotation_count,
         "-" if reason is None else reason,
         "-" if upstream_status is None else upstream_status,
+        scope,
     )
 
 
@@ -619,6 +624,7 @@ def _run_llm(
     client: httpx.Client | None,
     clock: Callable[[], datetime],
     fail: FailureOf = submission_failure,
+    scope: PromptScope = FULL_SCOPE,
 ) -> ProposedSet | Outcome:
     """Steps 7-9 of stage 4 §4.3: one provider call and its parsed set. Runs in a worker."""
     started = time.perf_counter()
@@ -632,15 +638,23 @@ def _run_llm(
     ) -> None:
         elapsed = time.perf_counter() - started
         _log_llm(
-            settings.provider, settings.model, status, elapsed, output, count, reason, upstream
+            settings.provider,
+            settings.model,
+            status,
+            elapsed,
+            output,
+            count,
+            reason,
+            upstream,
+            scope.name,
         )
 
     try:
         if client is None:
             with new_client() as own_client:
-                proposed = annotate(settings, narrative, own_client, clock)
+                proposed = annotate(settings, narrative, own_client, clock, scope)
         else:
-            proposed = annotate(settings, narrative, client, clock)
+            proposed = annotate(settings, narrative, client, clock, scope)
     except ProviderTimeout:
         log(504, None, None, "LLM_TIMEOUT")
         return fail("LLM_TIMEOUT", None)
@@ -871,9 +885,10 @@ async def _remove_set(request: Request) -> Outcome:
     return serialize_update(report, identity, saved)
 
 
-async def _submit_annotated(request: Request) -> Outcome:
-    """Submit (stage 2 §3.1), propose (stage 4 §4.3), and accept (§4.4) in one request (§4.8),
-    storing nothing unless every step succeeds. Failures are ``RequestFailure``s, as submit's."""
+async def _submit_annotated(request: Request, scope: PromptScope) -> Outcome:
+    """Submit (stage 2 §3.1), propose (stage 4 §4.3), and accept (§4.4) in one request (§4.8;
+    §4.9 with ``AE_SCOPE``), storing nothing unless every step succeeds. Failures are
+    ``RequestFailure``s, as submit's."""
     body = await _read_body(request, _request_failure("single"))
     if isinstance(body, Outcome):
         return body
@@ -910,6 +925,7 @@ async def _submit_annotated(request: Request) -> Outcome:
             state.llm_client,
             state.clock,
             single_failure,
+            scope,
             limiter=_llm_limiter(),
         )
         if isinstance(proposed, Outcome):
@@ -1002,7 +1018,22 @@ async def submit_annotated(request: Request) -> Response:
     return await _respond(
         "POST",
         ANNOTATED_SUBMISSIONS_ROUTE,
-        lambda: _submit_annotated(request),
+        lambda: _submit_annotated(request, FULL_SCOPE),
+        lambda: single_failure("INTERNAL_ERROR"),
+    )
+
+
+@app.post(
+    AE_ANNOTATED_SUBMISSIONS_ROUTE,
+    openapi_extra=ae_annotated_submit_operation_extra(),
+    summary="Store one record with the LLM's adverse events",
+    status_code=201,
+)
+async def submit_ae_annotated(request: Request) -> Response:
+    return await _respond(
+        "POST",
+        AE_ANNOTATED_SUBMISSIONS_ROUTE,
+        lambda: _submit_annotated(request, AE_SCOPE),
         lambda: single_failure("INTERNAL_ERROR"),
     )
 

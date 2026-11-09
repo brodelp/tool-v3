@@ -153,6 +153,8 @@ def main() -> None:
         "/api/v1/submissions/{case_id}/llm-proposals/{proposal_id}",
         "/api/v1/submissions/{case_id}/llm-proposals/{proposal_id}/accept",
         "/api/v1/llm",
+        "/api/v1/annotated-submissions",
+        "/api/v1/annotated-submissions/ae",
     }
     check(
         "GET /openapi.json documents every endpoint",

@@ -229,5 +229,6 @@ def test_logs_contain_no_values(
     for secret in ("SECRET", "secret_user", LLM_SECRET_KEY, "llm.internal", "pw@"):
         assert secret not in caplog.text
     assert "provider=anthropic model=claude-x status=201" in caplog.text
+    assert "scope=full" in caplog.text
     assert f"POST {ROUTE} status=201" in caplog.text
     assert "reason=NARRATIVE_ALTERED" in caplog.text

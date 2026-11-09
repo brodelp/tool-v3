@@ -8,6 +8,7 @@ from scat_validator.config import (
     CHECKS,
     CHECKS_NOT_PERFORMED,
     LABELS,
+    LLM_AE_LABELS,
     LLM_PROPOSAL_TTL_SECONDS,
     MAX_BODY_BYTES,
     MAX_FOREIGN_FIELDS,
@@ -1026,11 +1027,22 @@ def _single_failure_example(code: Any, issues: list[Any] | None = None) -> dict[
     return _failure_example("single", code, ERROR_MESSAGES[code], issues or [])
 
 
-_ANNOTATED_SUBMIT_DESCRIPTION: Final = f"""
+_ANNOTATED_SUBMIT_SUMMARY: Final = """
 Submits one record, runs the configured LLM on its narrative, and stores the record with the
 LLM's set in one request: `POST /api/v1/submissions`, then `POST .../llm-proposals`, then
 `.../accept`, without a proposal to review. Nothing is stored unless every step succeeds.
+"""
 
+_AE_ANNOTATED_SUBMIT_SUMMARY: Final = """
+As `POST /api/v1/annotated-submissions`, but the LLM is asked only for adverse events (label
+`AE`), with a prompt that describes AEs and the concepts that are not AEs. Tags for other labels
+in the output are checked like any tag (without markup the output must still equal the
+narrative) and then dropped, so the set holds `AE` annotations only. The set records its scope as
+the foreign property `"label_scope": ["AE"]`. Its id is the model's, as for a full run, so a
+later full run of the same model replaces it. Nothing is stored unless every step succeeds.
+"""
+
+_ANNOTATED_SUBMIT_DETAILS: Final = f"""
 The set `llm:<provider>:<model>` is added to `annotation_sets` byte for byte (replacing a set
 with that id in the upload, or creating `annotation_sets` after the record's last member). The
 submission is stored at version 2: its original record is the upload, and its current record has
@@ -1055,13 +1067,27 @@ pair was submitted meanwhile). Every failure is a `RequestFailure`.
 """
 
 
-def annotated_submit_operation_extra() -> dict[str, Any]:
+EXAMPLE_AE_LLM_SET: Final[dict[str, Any]] = {
+    **EXAMPLE_LLM_SET,
+    "label_scope": list(LLM_AE_LABELS),
+    "annotations": {"AE": [{"text": "nausea", "start": 15, "end": 21}]},
+}
+EXAMPLE_AE_ANNOTATED_SUBMISSION: Final[dict[str, Any]] = {
+    **EXAMPLE_ANNOTATED_SUBMISSION,
+    "record": {**EXAMPLE_RECORD, "annotation_sets": {EXAMPLE_SET_ID: EXAMPLE_AE_LLM_SET}},
+}
+
+
+def annotated_submit_operation_extra(
+    summary: str = _ANNOTATED_SUBMIT_SUMMARY,
+    example: dict[str, Any] = EXAMPLE_ANNOTATED_SUBMISSION,
+) -> dict[str, Any]:
     extra = submit_operation_extra()
     responses = extra["responses"]
     responses["201"] = _response(
         "Valid, annotated by the LLM, and stored: the export of the new submission.",
         "SubmissionExport",
-        {"annotated": EXAMPLE_ANNOTATED_SUBMISSION},
+        {"annotated": example},
         extra_headers=_LOCATION_HEADER | _ETAG_HEADER,
     )
     responses["422"]["content"]["application/json"]["examples"]["narrative_has_markup"] = {
@@ -1092,8 +1118,14 @@ def annotated_submit_operation_extra() -> dict[str, Any]:
     responses["504"] = _response(
         "`LLM_TIMEOUT`.", failure, {"timeout": _single_failure_example("LLM_TIMEOUT")}
     )
-    extra["description"] = _ANNOTATED_SUBMIT_DESCRIPTION + _LIMITS_DESCRIPTION
+    extra["description"] = summary + _ANNOTATED_SUBMIT_DETAILS + _LIMITS_DESCRIPTION
     return extra
+
+
+def ae_annotated_submit_operation_extra() -> dict[str, Any]:
+    return annotated_submit_operation_extra(
+        _AE_ANNOTATED_SUBMIT_SUMMARY, EXAMPLE_AE_ANNOTATED_SUBMISSION
+    )
 
 
 def _validated_update_responses(ok_description: str, ok_example: dict[str, Any]) -> dict[str, Any]:
