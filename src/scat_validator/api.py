@@ -432,8 +432,14 @@ def parse_update_body(body: bytes) -> str | Outcome:
     return annotations_text(document.document_bytes.decode("utf-8"))
 
 
+type FailureOf = Callable[[ErrorCode, IssueCollector | None], Outcome]
+
+
 def evaluate_candidate(
-    record_text: str, candidate_of: Callable[[str], str], size_path: str = "annotations"
+    record_text: str,
+    candidate_of: Callable[[str], str],
+    size_path: str = "annotations",
+    fail: FailureOf = submission_failure,
 ) -> Outcome | tuple[ValidationReport, str]:
     """Steps 8-9: build the candidate from the stored record, then validate it as one record.
 
@@ -442,7 +448,7 @@ def evaluate_candidate(
     candidate = candidate_of(record_text)
     size_issues = candidate_size_issues(candidate, size_path)
     if size_issues is not None:
-        return submission_failure("INVALID_DOCUMENT", size_issues)
+        return fail("INVALID_DOCUMENT", size_issues)
     # A stored record with a decoded map spliced in is valid JSON within the depth limit.
     document = decode_document(candidate.encode("utf-8"))
     return build_report("single", [(document.value, PathNode.root())]), candidate
@@ -603,6 +609,7 @@ def _run_llm(
     narrative: str,
     client: httpx.Client | None,
     clock: Callable[[], datetime],
+    fail: FailureOf = submission_failure,
 ) -> ProposedSet | Outcome:
     """Steps 7-9 of stage 4 §4.3: one provider call and its parsed set. Runs in a worker."""
     started = time.perf_counter()
@@ -627,15 +634,15 @@ def _run_llm(
             proposed = annotate(settings, narrative, client, clock)
     except ProviderTimeout:
         log(504, None, None, "LLM_TIMEOUT")
-        return submission_failure("LLM_TIMEOUT")
+        return fail("LLM_TIMEOUT", None)
     except ProviderUnavailable as unavailable:
         log(502, None, None, "LLM_UNAVAILABLE", unavailable.upstream_status)
-        return submission_failure("LLM_UNAVAILABLE")
+        return fail("LLM_UNAVAILABLE", None)
     except OutputInvalid as invalid:
         log(502, invalid.output_code_points, None, invalid.reason)
         issues = IssueCollector()
         issues.add("llm_output", PathNode.root(), invalid.reason, OUTPUT_MESSAGES[invalid.reason])
-        return submission_failure("LLM_OUTPUT_INVALID", issues)
+        return fail("LLM_OUTPUT_INVALID", issues)
     except Exception:
         log(500, None, None, None)
         raise
@@ -658,13 +665,27 @@ def _llm_limiter() -> anyio.CapacityLimiter:
     return limiter
 
 
-def _narrative_and_presence(record_text: str, set_id: str) -> tuple[str, bool]:
-    """The stored narrative (losslessly decoded) and whether the record has set ``set_id``."""
+def _narrative(record_text: str) -> str:
+    """The narrative of a valid record, losslessly decoded."""
     record = decode_document(record_text.encode("utf-8")).value
-    assert isinstance(record, dict)  # a stored record is valid
+    assert isinstance(record, dict)
     narrative = record["narrative"]
     assert isinstance(narrative, str)
-    return narrative, has_set(record_text, set_id)
+    return narrative
+
+
+def _narrative_and_presence(record_text: str, set_id: str) -> tuple[str, bool]:
+    """The stored narrative and whether the record has set ``set_id``."""
+    return _narrative(record_text), has_set(record_text, set_id)
+
+
+def _narrative_problem(narrative: str) -> ErrorCode | None:
+    """Steps 5-6 of stage 4 §4.3: narratives the LLM is not run on."""
+    if len(narrative) > MAX_LLM_NARRATIVE_CODE_POINTS:
+        return "NARRATIVE_TOO_LONG"
+    if contains_markup(narrative):
+        return "NARRATIVE_HAS_MARKUP"
+    return None
 
 
 async def _propose(request: Request) -> Outcome:
@@ -688,10 +709,9 @@ async def _propose(request: Request) -> Outcome:
         narrative, replaces = await run_in_threadpool(
             _narrative_and_presence, stored.source_json, settings.set_id
         )
-        if len(narrative) > MAX_LLM_NARRATIVE_CODE_POINTS:
-            return submission_failure("NARRATIVE_TOO_LONG")
-        if contains_markup(narrative):
-            return submission_failure("NARRATIVE_HAS_MARKUP")
+        problem = _narrative_problem(narrative)
+        if problem is not None:
+            return submission_failure(problem)
         proposed = await anyio.to_thread.run_sync(
             _run_llm,
             settings,
