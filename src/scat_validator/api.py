@@ -171,17 +171,30 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        if dispatcher is not None:
-            await dispatcher.stop()
-            state.dispatcher = None
-        if created is not None:
-            created.dispose()
-            state.storage = None
-        if created_client is not None:
-            created_client.close()
-            state.llm_client = None
-        if loaded_settings:
-            state.llm_settings = None
+        # Each step runs even if an earlier one raised, so storage and the client are released.
+        try:
+            if dispatcher is not None:
+                try:
+                    await dispatcher.stop()
+                finally:
+                    state.dispatcher = None
+        finally:
+            try:
+                if created is not None:
+                    try:
+                        created.dispose()
+                    finally:
+                        state.storage = None
+            finally:
+                try:
+                    if created_client is not None:
+                        try:
+                            created_client.close()
+                        finally:
+                            state.llm_client = None
+                finally:
+                    if loaded_settings:
+                        state.llm_settings = None
 
 
 app = FastAPI(

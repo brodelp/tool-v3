@@ -1,6 +1,7 @@
 """Stage 4 §4.10: the annotation job dispatcher (item processing, dispatcher, restart, logging)."""
 
 import asyncio
+import gc
 import logging
 import re
 import threading
@@ -13,7 +14,7 @@ from uuid import UUID
 import httpx
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from scat_validator import jobs
 from scat_validator.annotation_pipeline import PipelineFailure, single_failure
@@ -322,6 +323,182 @@ async def test_unexpected_exception_fails_the_item(
     assert "secret" not in caplog.text
 
 
+def fail_once(
+    monkeypatch: pytest.MonkeyPatch, storage: Storage, name: str, exc: Exception
+) -> dict[str, int]:
+    """Make ``storage.<name>`` raise ``exc`` on its first call only; returns the call count."""
+    real = getattr(storage, name)
+    calls = {"count": 0}
+
+    def flaky(*args: Any) -> Any:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise exc
+        return real(*args)
+
+    monkeypatch.setattr(storage, name, flaky)
+    return calls
+
+
+def outage() -> OperationalError:
+    return OperationalError("UPDATE SECRETSQL", {"p": "SECRETPARAM"}, Exception("SECRETMSG"))
+
+
+def item_statuses(caplog: pytest.LogCaptureFixture, job_id: UUID, index: int = 0) -> list[str]:
+    prefix = f"llm_job job={job_id} item={index} status="
+    return [
+        line.removeprefix(prefix).split(" ")[0]
+        for line in caplog.messages
+        if line.startswith(prefix)
+    ]
+
+
+@pytest.mark.anyio
+async def test_unwritten_reschedule_is_retried_after_the_outage(
+    storage: Storage,
+    llm: Install,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    llm(OUTPUT)
+    fail_once(monkeypatch, storage, "insert_annotated", outage())
+    reschedules = fail_once(monkeypatch, storage, "reschedule_item", outage())
+    caplog.set_level(logging.INFO, logger="scat_validator")
+    clock = Clock()
+    job_id = add_job(storage, clock, ["5001-1"])
+    worker = dispatcher(storage, clock)
+    await worker.run_until_idle()  # the insert and the reschedule both meet the outage
+    assert reschedules["count"] == 1
+    assert item_of(storage, job_id, clock).status == "running"
+    await worker.run_until_idle()  # the reschedule is written first, then the item runs again
+    item = item_of(storage, job_id, clock)
+    assert (item.status, item.attempts) == ("succeeded", 1)
+    assert record_json_of(storage, job_id) is None
+    assert item_statuses(caplog, job_id) == ["running", "pending", "running", "succeeded"]
+    assert "SECRET" not in caplog.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("outcome", ["succeeded", "failed"])
+async def test_unwritten_finish_keeps_its_status(
+    storage: Storage,
+    llm: Install,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    outcome: str,
+) -> None:
+    truncated = anthropic("Aspirin caused", "max_tokens")
+    fake = llm(OUTPUT if outcome == "succeeded" else lambda request: truncated)
+    finishes = fail_once(monkeypatch, storage, "finish_item", outage())
+    caplog.set_level(logging.INFO, logger="scat_validator")
+    clock = Clock()
+    job_id = add_job(storage, clock, ["5001-1"])
+    worker = dispatcher(storage, clock)
+    await worker.run_until_idle()
+    assert finishes["count"] == 1
+    assert item_of(storage, job_id, clock).status == "running"
+    assert (stored_row(storage) is not None) == (outcome == "succeeded")
+    await worker.run_until_idle()  # the intended finish is written, not a retry
+    item = item_of(storage, job_id, clock)
+    assert (item.status, item.attempts) == (outcome, 1)
+    assert len(fake.requests) == 1
+    assert record_json_of(storage, job_id) is None
+    job = storage.fetch_job(job_id, clock())
+    assert job is not None and job.finished_at == clock()
+    assert item_statuses(caplog, job_id) == ["running", outcome]
+    assert "SECRET" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_unwritten_finish_waits_for_the_poll_and_stop_retries_it(
+    storage: Storage, llm: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm(OUTPUT)
+    finishes = fail_once(monkeypatch, storage, "finish_item", outage())
+    clock = Clock()
+    job_id = add_job(storage, clock, ["5001-1"])
+    worker = Dispatcher(
+        storage, app.state.llm_settings, app.state.llm_client, clock, poll_seconds=60
+    )
+    await worker.start()
+    try:
+        await until(lambda: finishes["count"] == 1)
+        await asyncio.sleep(0.2)  # room for a tight retry loop, if there were one
+        assert finishes["count"] == 1  # the loop backs off for the poll interval
+        assert item_of(storage, job_id, clock).status == "running"
+    finally:
+        await worker.stop()  # one more best-effort attempt
+    assert finishes["count"] == 2
+    item = item_of(storage, job_id, clock)
+    assert (item.status, item.attempts) == ("succeeded", 1)
+
+
+@pytest.mark.anyio
+async def test_stop_logs_a_database_error_without_sql(
+    storage: Storage,
+    llm: Install,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    blocking = Blocking()
+    fake = llm(blocking)
+    caplog.set_level(logging.DEBUG)
+    clock = Clock()
+    job_id = add_job(storage, clock, ["5001-1"])
+    worker = dispatcher(storage, clock)
+
+    def broken(*args: Any) -> Any:
+        raise ProgrammingError("UPDATE SECRETSQL", {"p": "SECRETPARAM"}, Exception("SECRETMSG"))
+
+    try:
+        await worker.start()
+        await until(lambda: len(fake.requests) == 1)
+        monkeypatch.setattr(storage, "finish_item", broken)
+        await worker.stop()  # does not raise
+    finally:
+        blocking.release.set()
+    await until(lambda: blocking.in_flight == 0)
+    assert item_of(storage, job_id, clock).status == "running"  # left for the startup sweep
+    assert "storage unavailable type=ProgrammingError" in caplog.text
+    assert "SECRET" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_stop_retrieves_and_logs_worker_exceptions(
+    storage: Storage,
+    llm: Install,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    llm(OUTPUT)
+    caplog.set_level(logging.DEBUG)
+    clock = Clock()
+    job_id = add_job(storage, clock, ["5001-1"])
+    worker = dispatcher(storage, clock)
+    started = asyncio.Event()
+
+    async def ends_badly(item: Any) -> bool:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise ProgrammingError(
+                "UPDATE SECRETSQL", {"p": "SECRETPARAM"}, Exception("SECRETMSG")
+            ) from None
+        return False
+
+    monkeypatch.setattr(worker, "_process", ends_badly)
+    await worker.start()
+    await asyncio.wait_for(started.wait(), 5)
+    await worker.stop()
+    gc.collect()
+    await asyncio.sleep(0)
+    assert item_of(storage, job_id, clock).status == "interrupted"
+    assert "storage unavailable type=ProgrammingError" in caplog.text
+    assert "never retrieved" not in caplog.text
+    assert "SECRET" not in caplog.text
+
+
 # ---------------------------------------------------------------- the dispatcher
 
 
@@ -442,7 +619,10 @@ async def test_stop_interrupts_an_item_claimed_while_stopping(
 async def test_wake_starts_a_new_job(storage: Storage, llm: Install) -> None:
     llm(OUTPUT)
     clock = Clock()
-    worker = dispatcher(storage, clock)
+    # A long poll: within the ``until`` timeout only the wake-up can start the job.
+    worker = Dispatcher(
+        storage, app.state.llm_settings, app.state.llm_client, clock, poll_seconds=60
+    )
     await worker.start()
     try:
         job_id = add_job(storage, clock, ["5001-1"])

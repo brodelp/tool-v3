@@ -631,3 +631,22 @@ async def test_lifespan_with_settings_survives_unmigrated_tables(
     assert app.state.dispatcher is None
     assert "storage unavailable type=ProgrammingError" in caplog.text
     assert "SECRET" not in caplog.text
+
+
+async def test_lifespan_teardown_completes_when_stop_fails(
+    storage: Storage, llm: Install, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    llm(OUTPUT)
+    monkeypatch.setattr(app.state, "llm_client", None)  # so the lifespan creates its own
+
+    async def broken_stop(self: Dispatcher) -> None:
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(Dispatcher, "stop", broken_stop)
+    clients: list[Any] = []
+    with pytest.raises(RuntimeError):
+        async with lifespan(app):
+            clients.append(app.state.llm_client)
+    assert clients[0].is_closed  # closed although stopping the dispatcher failed
+    assert app.state.llm_client is None
+    assert app.state.dispatcher is None

@@ -430,6 +430,15 @@ leave open:
 - **Shutdown while storing.** Shutdown is best-effort (§4.10): cancelling an item while its record
   is being stored can leave the record stored and the item `interrupted`; resubmitting that record
   then gets `ALREADY_SUBMITTED`.
+- **Unwritten transitions after an outage.** When the write that moves an item out of `running`
+  (back to `pending`, or to a terminal status) meets a storage outage, the dispatcher keeps the
+  intended write in memory and retries it at the start of each later drain, after the outage
+  back-off and before claiming; a finish stays a finish, so a stored record is never retried.
+  `stop` tries them once more; whatever is still unwritten is left to the startup sweep.
+- **Lost commit acknowledgement.** If the record's insert commits but the connection fails before
+  the commit is acknowledged, the item is treated as an outage and retried; the retry finds its
+  own record already stored, so the item becomes `failed` with `ALREADY_SUBMITTED` although the
+  record is stored. This is rare and accepted for a best-effort prototype.
 - **Pipeline module.** The shared annotate-and-store pipeline lives in
   `src/scat_validator/annotation_pipeline.py`, not under `llm/`, because the `llm` package never
   imports storage.

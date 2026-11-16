@@ -47,6 +47,19 @@ RETRYABLE_CODES: Final[frozenset[ErrorCode]] = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
+class _Unwritten:
+    """A transition whose write met a storage outage: the item is still ``running`` in the
+    database, so it is retried as the same write (a finish stays a finish)."""
+
+    item: ClaimedItem
+    status: Literal["succeeded", "failed", "interrupted", "pending"]
+    result_json: str | None
+    not_before: datetime | None
+    refund: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class Transition:
     """Where an item goes after one run: terminal, or back to ``pending`` at ``retry_at``."""
 
@@ -87,6 +100,12 @@ def _log_item(item: ClaimedItem, status: str, attempts: int, reason: str) -> Non
     )
 
 
+def _log_storage_fault(exc: SQLAlchemyError) -> None:
+    """Class and location only: an outage at WARNING, any other database error at ERROR."""
+    level = logging.WARNING if isinstance(exc, UNAVAILABLE_ERRORS) else logging.ERROR
+    log_fault(exc, level, "storage unavailable")
+
+
 async def sweep_jobs(storage: Storage, clock: Callable[[], datetime]) -> None:
     """The startup sweep: ``running`` items become ``interrupted``. Any database error (an
     outage, or tables not yet migrated) is logged by class and location only, never its SQL,
@@ -94,8 +113,7 @@ async def sweep_jobs(storage: Storage, clock: Callable[[], datetime]) -> None:
     try:
         count = await run_in_threadpool(storage.interrupt_running, clock(), LLM_JOB_TTL_SECONDS)
     except SQLAlchemyError as exc:
-        level = logging.WARNING if isinstance(exc, UNAVAILABLE_ERRORS) else logging.ERROR
-        log_fault(exc, level, "storage unavailable")
+        _log_storage_fault(exc)
     else:
         logger.info("llm_job_sweep interrupted=%d", count)
 
@@ -123,6 +141,9 @@ class Dispatcher:
         # A claim in progress, kept so that ``stop`` can interrupt an item claimed while the
         # loop was being cancelled.
         self._claim: asyncio.Task[ClaimedItem | None] | None = None
+        # Transitions not written because of a storage outage; their items stay ``running``
+        # until a later drain (or ``stop``) writes them.
+        self._unwritten: list[_Unwritten] = []
 
     def wake(self) -> None:
         """Ask the loop to look for claimable items now instead of at the next poll."""
@@ -141,7 +162,9 @@ class Dispatcher:
         self._loop_task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        """Cancel the loop and the workers, then mark their items ``interrupted``.
+        """Cancel the loop and the workers, retry unwritten transitions once, then mark the
+        workers' items ``interrupted``. Every write is best-effort; the startup sweep covers what
+        remains ``running``.
 
         A provider call already in a worker thread cannot be stopped; its result is dropped,
         and the running-guard of ``finish_item`` makes whichever write comes second a no-op.
@@ -166,18 +189,30 @@ class Dispatcher:
     ) -> None:
         if tasks:
             await asyncio.wait(tasks)
+            for task in tasks:  # retrieve every result, so none is printed with its SQL later
+                if not task.cancelled() and (exc := task.exception()) is not None:
+                    self._log_task_fault(exc)
         if claim is not None:  # claimed while the loop was being cancelled
             try:
                 claimed = await claim
-            except UNAVAILABLE_ERRORS as exc:  # the claim failed, so it claimed nothing
-                log_fault(exc, logging.WARNING, "storage unavailable")
-                claimed = None
-            except Exception as exc:
-                log_fault(exc, logging.ERROR, "internal error")
+            except Exception as exc:  # the claim failed, so it claimed nothing
+                self._log_task_fault(exc)
                 claimed = None
             if claimed is not None:
                 items.append(claimed)
-        await asyncio.gather(*(self._finish(item, "interrupted", None, "-") for item in items))
+        await self._write_unwritten()
+        writes = [self._finish(item, "interrupted", None, "-") for item in items]
+        for result in await asyncio.gather(*writes, return_exceptions=True):
+            if isinstance(result, BaseException):
+                self._log_task_fault(result)
+        self._unwritten.clear()  # best-effort: the startup sweep covers whatever remains
+
+    @staticmethod
+    def _log_task_fault(exc: BaseException) -> None:
+        if isinstance(exc, SQLAlchemyError):
+            _log_storage_fault(exc)
+        else:
+            log_fault(exc, logging.ERROR, "internal error")
 
     # ------------------------------------------------------------ internals
 
@@ -196,8 +231,9 @@ class Dispatcher:
                 await asyncio.wait_for(self._wake.wait(), self._poll_seconds)
 
     async def _drain(self) -> bool:
-        """Claim and run items until idle; true when storage was unavailable."""
-        outage = False
+        """Write unwritten transitions, then claim and run items until idle; true when storage
+        was unavailable."""
+        outage = not await self._write_unwritten()
         while True:
             while not outage and len(self._workers) < LLM_JOB_MAX_CONCURRENT:
                 claimed = await self._next_claim()
@@ -218,7 +254,7 @@ class Dispatcher:
                 del self._workers[worker]
                 try:
                     outage = worker.result() or outage
-                except Exception as exc:  # a failed write: the item waits for the next sweep
+                except Exception as exc:  # unexpected: the item waits for the next sweep
                     log_fault(exc, logging.ERROR, "internal error")
 
     async def _next_claim(self) -> ClaimedItem | object | None:
@@ -263,15 +299,33 @@ class Dispatcher:
         except Exception as exc:  # any unexpected fault fails this item only
             log_fault(exc, logging.ERROR, "internal error")
             body = single_failure("INTERNAL_ERROR").body.decode("utf-8")
-            await self._finish(item, "failed", body, "INTERNAL_ERROR")
-            return False
+            return not await self._finish(item, "failed", body, "INTERNAL_ERROR")
         step = transition(result, item.attempts, self._clock())
         if step.status == "pending":
             assert step.retry_at is not None
-            await self._reschedule(item, step.retry_at, step.refund, _reason(result))
+            written = await self._reschedule(item, step.retry_at, step.refund, _reason(result))
         else:
-            await self._finish(item, step.status, step.result_json, _reason(result))
-        return False
+            written = await self._finish(item, step.status, step.result_json, _reason(result))
+        return not written
+
+    async def _write_unwritten(self) -> bool:
+        """Retry the transitions an outage left unwritten, in order; false when one meets an
+        outage again (it and the rest stay queued for the next drain)."""
+        queued, self._unwritten = self._unwritten, []
+        for position, write in enumerate(queued):
+            if write.status == "pending":
+                assert write.not_before is not None
+                written = await self._reschedule(
+                    write.item, write.not_before, write.refund, write.reason
+                )
+            else:
+                written = await self._finish(
+                    write.item, write.status, write.result_json, write.reason
+                )
+            if not written:  # re-queued by the write; the rest wait behind it
+                self._unwritten.extend(queued[position + 1 :])
+                return False
+        return True
 
     async def _finish(
         self,
@@ -279,8 +333,9 @@ class Dispatcher:
         status: Literal["succeeded", "failed", "interrupted"],
         result_json: str | None,
         reason: str,
-    ) -> None:
-        # A write that fails on an outage leaves the item running until the next startup sweep.
+    ) -> bool:
+        """Write a terminal transition; false on a storage outage, after queueing it for retry.
+        Any other database error is logged and dropped (the startup sweep covers the item)."""
         try:
             await run_in_threadpool(
                 self._storage.finish_item,
@@ -291,19 +346,29 @@ class Dispatcher:
                 self._clock(),
                 LLM_JOB_TTL_SECONDS,
             )
-        except UNAVAILABLE_ERRORS as exc:
-            log_fault(exc, logging.WARNING, "storage unavailable")
-            return
+        except SQLAlchemyError as exc:
+            _log_storage_fault(exc)
+            if not isinstance(exc, UNAVAILABLE_ERRORS):
+                return True
+            self._unwritten.append(_Unwritten(item, status, result_json, None, False, reason))
+            return False
         _log_item(item, status, item.attempts, reason)
+        return True
 
     async def _reschedule(
         self, item: ClaimedItem, not_before: datetime, refund: bool, reason: str
-    ) -> None:
+    ) -> bool:
+        """Return an item to ``pending``; false on a storage outage, after queueing it for retry.
+        Any other database error is logged and dropped (the startup sweep covers the item)."""
         try:
             await run_in_threadpool(
                 self._storage.reschedule_item, item.job_id, item.index, not_before, refund
             )
-        except UNAVAILABLE_ERRORS as exc:
-            log_fault(exc, logging.WARNING, "storage unavailable")
-            return
+        except SQLAlchemyError as exc:
+            _log_storage_fault(exc)
+            if not isinstance(exc, UNAVAILABLE_ERRORS):
+                return True
+            self._unwritten.append(_Unwritten(item, "pending", None, not_before, refund, reason))
+            return False
         _log_item(item, "pending", item.attempts - 1 if refund else item.attempts, reason)
+        return True
