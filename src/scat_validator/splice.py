@@ -60,6 +60,26 @@ def object_members(text: str, start: int = 0) -> list[MemberSpan]:
         index = _skip_whitespace(text, index + 1)  # past ','
 
 
+def array_elements(text: str, start: int) -> list[tuple[int, int]]:
+    """The ``[start, end)`` spans of the elements of the JSON array whose ``[`` is at ``start``.
+
+    ``text`` is already validated; each span covers exactly the element's text, without the
+    surrounding whitespace or commas.
+    """
+    skipper = _value_skipper()
+    spans: list[tuple[int, int]] = []
+    index = _skip_whitespace(text, start + 1)
+    if text[index] == "]":
+        return spans
+    while True:
+        _, end = skipper.raw_decode(text, index)
+        spans.append((index, end))
+        index = _skip_whitespace(text, end)
+        if text[index] == "]":
+            return spans
+        index = _skip_whitespace(text, index + 1)  # past ','
+
+
 def member(members: list[MemberSpan], name: str) -> MemberSpan | None:
     for span in members:
         if span.name == name:

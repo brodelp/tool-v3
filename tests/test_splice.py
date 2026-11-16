@@ -4,6 +4,7 @@ import pytest
 
 from scat_validator.splice import (
     append_member,
+    array_elements,
     json_name,
     member,
     object_members,
@@ -103,3 +104,24 @@ def test_without_set_removes_or_reports_absence() -> None:
     assert without_set('{"a":1,"annotation_sets":{"x":{}}}', "x") == '{"a":1,"annotation_sets":{}}'
     assert without_set(text, "z") is None
     assert without_set('{"a":1}', "x") is None
+
+
+def test_array_elements_of_empty_array() -> None:
+    assert array_elements("[ ]", 0) == []
+
+
+def test_array_elements_keep_exact_text() -> None:
+    text = '{"records":[ {"a":"\\u00e9","n":1.0E+2} ,\r\n{"b":"\\/"}]}'
+    records = member(object_members(text), "records")
+    assert records is not None
+    spans = array_elements(text, records.value_start)
+    assert [text[start:end] for start, end in spans] == [
+        '{"a":"\\u00e9","n":1.0E+2}',
+        '{"b":"\\/"}',
+    ]
+
+
+def test_array_elements_nested() -> None:
+    text = '[[1,[2]], "a],b" ,"]"]'
+    spans = array_elements(text, 0)
+    assert [text[start:end] for start, end in spans] == ["[1,[2]]", '"a],b"', '"]"']
