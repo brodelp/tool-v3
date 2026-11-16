@@ -362,8 +362,8 @@ curl -s "http://localhost:8000$LOC"
 `null`, fetch the next page with `?after=<next_after>`. `counts` and `done` always cover the whole job.
 
 Jobs run in the service process, so they are best-effort. When the service restarts, items that were
-running become `interrupted` (resubmit those records); `pending` items resume when the LLM is
-configured. A job expires 24 hours after it finishes, and then polling it returns `404 JOB_NOT_FOUND`.
+running become `interrupted`; `pending` items resume when the LLM is configured. To retry
+`interrupted` and `failed` records, resubmit them in a new job. A job expires 24 hours after it finishes, and then polling it returns `404 JOB_NOT_FOUND`.
 
 The model must return the narrative unchanged with only tags added; if its output does not
 reproduce the narrative exactly, the run fails rather than guessing, and running it again may

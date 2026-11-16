@@ -2,7 +2,7 @@
 
 ## Stage 4 — Annotation sets and LLM annotation (prototype)
 
-Revision 0.1 — 29 October 2026
+Revision 0.2 — 16 November 2026
 
 ### 1. Goal, authority, and scope
 
@@ -596,3 +596,11 @@ internal error (`500`), since the parser cannot produce one.
 - Streaming progress; chunking long narratives.
 - Recording prompt versions and sampling parameters in provenance.
 - Data-processing agreements for cloud providers; per-tenant provider choice.
+
+### Revision 0.2 change record
+
+- Added annotation jobs (§4.10): `POST /api/v1/annotation-jobs` and `POST
+  /api/v1/annotation-jobs/ae` for asynchronous batch LLM annotation, `GET
+  /api/v1/annotation-jobs/{job_id}` with response-budget paging (`after`, `next_after`), item
+  processing and retry, and the in-process dispatcher (restart, shutdown, storage outage,
+  logging). Acceptance criteria L17–L20 cover them.
