@@ -7,6 +7,7 @@ same bytes. It sits above the ``llm`` package, which never imports storage.
 import asyncio
 import logging
 import time
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -105,6 +106,13 @@ class PipelineFailure:
     code: ErrorCode
     reason: OutputReason | None
     outcome: Outcome
+
+
+def log_fault(exc: BaseException, level: int, event: str) -> None:
+    """Log a fault's class and raising location only: never payloads or exception messages."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    where = f"{frames[-1].filename}:{frames[-1].lineno}" if frames else "unknown"
+    logger.log(level, "%s type=%s at=%s", event, type(exc).__name__, where)
 
 
 def _log_llm(

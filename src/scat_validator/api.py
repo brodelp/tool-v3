@@ -11,7 +11,6 @@ configured, is served at ``/`` after every API route (stage 3 spec §6).
 import logging
 import os
 import time
-import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -37,6 +36,7 @@ from scat_validator.annotation_pipeline import (
     annotate_and_store,
     evaluate_candidate,
     llm_limiter,
+    log_fault,
     narrative_of,
     narrative_problem,
     run_llm,
@@ -286,13 +286,6 @@ async def _evaluate_request(request: Request, mode: Mode) -> Outcome:
     return await run_in_threadpool(evaluate_body, mode, body, _query_string(request))
 
 
-def _log_fault(exc: BaseException, level: int, event: str) -> None:
-    # Log the fault class and raising location only: never payloads or exception messages.
-    frames = traceback.extract_tb(exc.__traceback__)
-    where = f"{frames[-1].filename}:{frames[-1].lineno}" if frames else "unknown"
-    logger.log(level, "%s type=%s at=%s", event, type(exc).__name__, where)
-
-
 async def _respond(
     method: str,
     route: str,
@@ -305,7 +298,7 @@ async def _respond(
     except ClientDisconnect:
         raise
     except Exception as exc:  # any unexpected fault discards partial results
-        _log_fault(exc, logging.ERROR, "internal error")
+        log_fault(exc, logging.ERROR, "internal error")
         outcome = internal_error()
     logger.info(
         "%s %s status=%d duration_ms=%.1f records=%s issues=%d",
@@ -380,7 +373,7 @@ async def _submit(request: Request) -> Outcome:
     try:
         submitted_at = await run_in_threadpool(storage.insert, case_id, username, source_json)
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return serialize_failure(request_failure("single", "STORAGE_UNAVAILABLE"))
     if submitted_at is None:
         return serialize_failure(request_failure("single", "ALREADY_SUBMITTED"))
@@ -408,7 +401,7 @@ async def _lookup(request: Request, action: Callable[[Storage, Identity], Outcom
     try:
         return await run_in_threadpool(action, storage, identity)
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return submission_failure("STORAGE_UNAVAILABLE")
 
 
@@ -425,7 +418,7 @@ async def _list(request: Request) -> Outcome:
     try:
         entries = await run_in_threadpool(storage.list_for, username)
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return submission_failure("STORAGE_UNAVAILABLE")
     return serialize_list(username, entries)
 
@@ -476,7 +469,7 @@ async def _update(request: Request) -> Outcome:
             storage.update_record, identity.case_id, identity.username, stored.version, candidate
         )
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return submission_failure("STORAGE_UNAVAILABLE")
     if saved is None:  # changed or deleted since it was read
         return submission_failure("VERSION_CONFLICT")
@@ -606,7 +599,7 @@ async def _propose(request: Request) -> Outcome:
             LLM_PROPOSAL_TTL_SECONDS,
         )
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return submission_failure("STORAGE_UNAVAILABLE")
     if saved is None:  # deleted while the provider ran
         return submission_failure("NOT_FOUND")
@@ -663,7 +656,7 @@ async def _accept(request: Request) -> Outcome:
             storage.accept_proposal, proposal_id, case_id, username, stored.version, candidate
         )
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return submission_failure("STORAGE_UNAVAILABLE")
     if saved is None:  # the record changed, or the proposal went, since they were read
         return submission_failure("VERSION_CONFLICT")
@@ -681,7 +674,7 @@ async def _discard(request: Request) -> Outcome:
             return Outcome(204, b"", None, 0)
         stored = await run_in_threadpool(storage.fetch, case_id, username)
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return submission_failure("STORAGE_UNAVAILABLE")
     return submission_failure("NOT_FOUND" if stored is None else "PROPOSAL_NOT_FOUND")
 
@@ -729,7 +722,7 @@ async def _remove_set(request: Request) -> Outcome:
             storage.update_record, identity.case_id, identity.username, stored.version, candidate
         )
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return submission_failure("STORAGE_UNAVAILABLE")
     if saved is None:
         return submission_failure("VERSION_CONFLICT")
@@ -777,7 +770,7 @@ async def _submit_annotated(request: Request, scope: PromptScope) -> Outcome:
             username,
         )
     except UNAVAILABLE_ERRORS as exc:
-        _log_fault(exc, logging.WARNING, "storage unavailable")
+        log_fault(exc, logging.WARNING, "storage unavailable")
         return single_failure("STORAGE_UNAVAILABLE")
     if isinstance(result, PipelineFailure):
         return result.outcome
