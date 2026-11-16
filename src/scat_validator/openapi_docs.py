@@ -9,7 +9,10 @@ from scat_validator.config import (
     CHECKS_NOT_PERFORMED,
     LABELS,
     LLM_AE_LABELS,
+    LLM_JOB_MAX_ATTEMPTS,
+    LLM_JOB_TTL_SECONDS,
     LLM_PROPOSAL_TTL_SECONDS,
+    MAX_BATCH_RECORDS,
     MAX_BODY_BYTES,
     MAX_FOREIGN_FIELDS,
     MAX_ISSUES,
@@ -23,6 +26,7 @@ from scat_validator.config import (
 )
 from scat_validator.contracts import (
     LLM_SET_ID_PATTERN,
+    AnnotationJob,
     AnnotationsUpdate,
     BatchEnvelope,
     CaseId,
@@ -56,6 +60,7 @@ _SCHEMA_INPUTS: Final = [
     ("SubmissionList", SubmissionList),
     ("LlmStatus", LlmStatus),
     ("LlmProposal", LlmProposal),
+    ("AnnotationJob", AnnotationJob),
 ]
 
 
@@ -1253,6 +1258,253 @@ def remove_set_operation_extra() -> dict[str, Any]:
                 "(`INVALID_DOCUMENT`), or a SubmissionFailure for invalid parameters "
                 "(`INVALID_PARAMETERS`).",
                 {"user_set_id": EXAMPLE_USER_SET_ID},
+            ),
+        },
+    }
+
+
+# ---------------------------------------------------------------- stage 4: annotation jobs
+
+EXAMPLE_JOB_ID: Final = "5b0c2a4e-3f1d-4c55-9a0e-6d2f8b7c1e90"
+EXAMPLE_JOB_CREATED_AT: Final = "2026-11-16T10:00:00.000000Z"
+EXAMPLE_JOB_REQUEST: Final[dict[str, Any]] = {
+    "records": [
+        EXAMPLE_RECORD,
+        {**EXAMPLE_RECORD, "case_id": "12345679-1", "narrative": "Aspirin <AE> caused nausea."},
+    ]
+}
+
+
+def _job_item(
+    index: int, case_id: str, status: str, attempts: int, location: Any, result: Any
+) -> dict[str, Any]:
+    return {
+        "index": index,
+        "case_id": case_id,
+        "username": "demo_annotator",
+        "status": status,
+        "attempts": attempts,
+        "location": location,
+        "result": result,
+    }
+
+
+def _job_counts(**counts: int) -> dict[str, int]:
+    return {
+        status: counts.get(status, 0)
+        for status in ("pending", "running", "succeeded", "failed", "rejected", "interrupted")
+    }
+
+
+_EXAMPLE_REJECTED_ITEM: Final = _job_item(
+    1, "12345679-1", "rejected", 0, None, _single_failure_example("NARRATIVE_HAS_MARKUP")
+)
+
+
+def example_job_accepted(scope: str) -> dict[str, Any]:
+    return {
+        "job_id": EXAMPLE_JOB_ID,
+        "scope": scope,
+        "created_at": EXAMPLE_JOB_CREATED_AT,
+        "finished_at": None,
+        "expires_at": None,
+        "done": False,
+        "counts": _job_counts(pending=1, rejected=1),
+        "items": [_job_item(0, "12345678-1", "pending", 0, None, None), _EXAMPLE_REJECTED_ITEM],
+        "next_after": None,
+    }
+
+
+EXAMPLE_JOB_DONE: Final[dict[str, Any]] = {
+    **example_job_accepted("full"),
+    "finished_at": "2026-11-16T10:00:41.250000Z",
+    "expires_at": "2026-11-17T10:00:41.250000Z",
+    "done": True,
+    "counts": _job_counts(succeeded=1, rejected=1),
+    "items": [
+        _job_item(0, "12345678-1", "succeeded", 1, EXAMPLE_LOCATION, None),
+        _EXAMPLE_REJECTED_ITEM,
+    ],
+}
+EXAMPLE_JOB_NOT_FOUND: Final = _code_failure("JOB_NOT_FOUND")
+EXAMPLE_INVALID_JOB_ID: Final = _code_failure(
+    "INVALID_PARAMETERS", [_issue("path", "/job_id", "INVALID_ID", Msg.JOB_ID)]
+)
+EXAMPLE_INVALID_AFTER: Final = _code_failure(
+    "INVALID_PARAMETERS", [_issue("query", "/after", "INVALID_QUERY_PARAMETER", Msg.AFTER)]
+)
+
+
+def _batch_failure_example(code: Any, issues: list[Any] | None = None) -> dict[str, Any]:
+    return _failure_example("batch", code, ERROR_MESSAGES[code], issues or [])
+
+
+_JOB_SUMMARY: Final = f"""
+Queues 1 to {MAX_BATCH_RECORDS} new records for LLM annotation and returns `202` at once, with
+the job's URL in `Location`; poll it for each record's outcome. Each record is stored with the
+LLM's set exactly as `POST /api/v1/annotated-submissions` would store it, or not at all.
+"""
+
+_AE_JOB_SUMMARY: Final = """
+As `POST /api/v1/annotation-jobs`, but each record is annotated as `POST
+/api/v1/annotated-submissions/ae` annotates it: adverse events only (label `AE`), the set
+recording `"label_scope": ["AE"]`. The job's `scope` is `ae`.
+"""
+
+_JOB_DETAILS: Final = f"""
+The body is a batch envelope under the gates of `POST /api/v1/validate-batch`. No query
+parameters are accepted (`echo` included: 422 `INVALID_OPTIONS`). Failures of the whole request
+are `RequestFailure`s in `batch` mode, and no job is created: body gates and decoding (400, 413,
+415, 422), configuration (503 `LLM_NOT_CONFIGURED`), storage (503 `STORAGE_UNAVAILABLE`).
+
+Each element of `records` is then taken byte for byte from the upload and checked in order. It
+is **rejected**, with the body `POST /api/v1/annotated-submissions` would return for it as the
+item's `result`, when it fails validation as a single record (a ValidationReport), when its
+narrative is too long or contains tag markup, or when its `(case_id, username)` is already
+stored or already used by an earlier pending item of this job (409 `ALREADY_SUBMITTED`). Other
+items are **pending**. A job is created even when every item is rejected.
+
+Pending items are annotated in the background, at most two at a time; a provider timeout,
+unavailability, or unusable output (other than truncation) is retried up to
+{LLM_JOB_MAX_ATTEMPTS} attempts. With a cloud provider the narratives leave the service and are
+processed by that provider.
+
+{_NO_AUTH_NOTE}
+"""
+
+_JOB_POLL_DESCRIPTION: Final = f"""
+An annotation job: its counts by status, whether it is `done` (no item `pending` or `running`),
+and one page of its items in `index` order. A `succeeded` item links to its export in
+`location`; a `rejected` or `failed` item carries the failure body in `result`, exactly as
+`POST /api/v1/annotated-submissions` returns it; an `interrupted` item carries neither. Resubmit
+`failed` and `interrupted` records in a new job.
+
+**Paging:** each item embeds a whole single-record result, so a job's items may not fit one
+response of at most {MAX_RESPONSE_BYTES} bytes. A page lists the items with `index` greater than
+`after` (all when it is absent), as many whole items as fit, and at least one when any remain.
+`next_after` is the last listed index when more items follow; send it as `after` to read the
+next page. It is null on the last page. `counts`, `done`, and the timestamps always describe the
+whole job.
+
+A job expires {LLM_JOB_TTL_SECONDS} seconds after it finishes; an unknown or expired job is 404
+`JOB_NOT_FOUND`. Parameters are checked before storage (422 `INVALID_PARAMETERS`).
+{_EMPTY_BODY_NOTE}
+
+{_NO_AUTH_NOTE}
+"""
+
+_JOB_LOCATION_HEADER: Final = {
+    "Location": {
+        "description": "URL of the new job: `/api/v1/annotation-jobs/{job_id}`.",
+        "schema": {"type": "string"},
+    }
+}
+
+
+def annotation_job_operation_extra(
+    summary: str = _JOB_SUMMARY, scope: str = "full"
+) -> dict[str, Any]:
+    failure = "RequestFailure"
+    query_parameter = _batch_failure_example(
+        "INVALID_OPTIONS",
+        [_issue("query", "/echo", "UNKNOWN_QUERY_PARAMETER", Msg.NO_QUERY)],
+    )
+    no_records = _batch_failure_example(
+        "INVALID_DOCUMENT", [_issue("body", "/records", "LIMIT_EXCEEDED", Msg.RECORDS_LENGTH)]
+    )
+    return {
+        "description": summary + _JOB_DETAILS + _LIMITS_DESCRIPTION,
+        "parameters": [],
+        "requestBody": {
+            "required": True,
+            "description": f"Closed envelope with 1-{MAX_BATCH_RECORDS} records.",
+            "content": _json_content(_ref("BatchEnvelope"), {"job": EXAMPLE_JOB_REQUEST}),
+        },
+        "responses": {
+            "202": _response(
+                "Accepted: the job, with the first page of its items.",
+                "AnnotationJob",
+                {"job": example_job_accepted(scope)},
+                extra_headers=_JOB_LOCATION_HEADER,
+            ),
+            "400": _response(
+                "`INVALID_JSON` or `DUPLICATE_PROPERTY`.",
+                failure,
+                {"invalid_json": example_invalid_json("batch")},
+            ),
+            "413": _response("`PAYLOAD_TOO_LARGE` (no issues).", failure),
+            "415": _response(
+                "`UNSUPPORTED_MEDIA_TYPE` or `UNSUPPORTED_CONTENT_ENCODING` (no issues).", failure
+            ),
+            "422": _response(
+                "`INVALID_OPTIONS` (any query parameter), or `INVALID_DOCUMENT` (depth, "
+                "envelope shape, unknown envelope members, or record count).",
+                failure,
+                {"no_records": no_records, "query_parameter": query_parameter},
+            ),
+            "500": _response("`INTERNAL_ERROR` (no issues); no job.", failure),
+            "503": _response(
+                "`LLM_NOT_CONFIGURED`, or `STORAGE_UNAVAILABLE`; no job.",
+                failure,
+                {
+                    "not_configured": _batch_failure_example("LLM_NOT_CONFIGURED"),
+                    "storage_unavailable": _batch_failure_example("STORAGE_UNAVAILABLE"),
+                },
+            ),
+        },
+    }
+
+
+def ae_annotation_job_operation_extra() -> dict[str, Any]:
+    return annotation_job_operation_extra(_AE_JOB_SUMMARY, "ae")
+
+
+def job_poll_operation_extra() -> dict[str, Any]:
+    return {
+        "description": _JOB_POLL_DESCRIPTION,
+        "parameters": [
+            {
+                "name": "job_id",
+                "in": "path",
+                "required": True,
+                "schema": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                },
+                "description": "The `job_id` of an unexpired job, lower-case and hyphenated.",
+            },
+            {
+                "name": "after",
+                "in": "query",
+                "required": False,
+                "schema": {"type": "integer", "minimum": 0},
+                "description": (
+                    "List only items with a greater `index`: the previous page's `next_after`. "
+                    "A decimal integer without sign or leading zeros, at most once."
+                ),
+            },
+        ],
+        "responses": {
+            "200": _response("One page of the job.", "AnnotationJob", {"done": EXAMPLE_JOB_DONE}),
+            **_failure_responses(
+                {
+                    "404": (
+                        "`JOB_NOT_FOUND`: unknown or expired.",
+                        {"job_not_found": EXAMPLE_JOB_NOT_FOUND},
+                    ),
+                    "413": _BODY_413,
+                    "422": (
+                        "`INVALID_PARAMETERS`: a malformed `job_id` or `after`, or another "
+                        "parameter.",
+                        {
+                            "invalid_job_id": EXAMPLE_INVALID_JOB_ID,
+                            "invalid_after": EXAMPLE_INVALID_AFTER,
+                        },
+                    ),
+                    "500": _INTERNAL_500,
+                    "503": _STORAGE_503,
+                }
             ),
         },
     }

@@ -13,7 +13,7 @@ import os
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -26,6 +26,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import Response
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.types import Scope
@@ -44,30 +45,35 @@ from scat_validator.annotation_pipeline import (
 )
 from scat_validator.config import (
     ANNOTATION_SETS_FIELD,
+    LLM_JOB_TTL_SECONDS,
     LLM_PROPOSAL_TTL_SECONDS,
     MAX_BODY_BYTES,
 )
-from scat_validator.contracts import ErrorCode, Mode, ValidationReport
-from scat_validator.diagnostics import IssueCollector, Msg
+from scat_validator.contracts import ErrorCode, Mode
+from scat_validator.diagnostics import IssueCollector
+from scat_validator.documents import decode_failure_issues, evaluate_document
 from scat_validator.http_gates import (
-    QueryOptions,
     content_encoding_supported,
     declared_length_nonzero,
     declared_length_too_large,
     media_type_supported,
-    parse_query,
 )
+from scat_validator.job_intake import intake_job, job_items, pending_identities, plan_job
+from scat_validator.jobs import Dispatcher
 from scat_validator.llm.prompt import AE_SCOPE, FULL_SCOPE, PromptScope
 from scat_validator.llm.providers import new_client
 from scat_validator.llm.settings import LlmSettings, load_llm_settings
 from scat_validator.openapi_docs import (
     accept_operation_extra,
     ae_annotated_submit_operation_extra,
+    ae_annotation_job_operation_extra,
     annotated_submit_operation_extra,
+    annotation_job_operation_extra,
     component_schemas,
     delete_operation_extra,
     discard_operation_extra,
     export_operation_extra,
+    job_poll_operation_extra,
     list_operation_extra,
     llm_status_operation_extra,
     operation_extra,
@@ -76,12 +82,8 @@ from scat_validator.openapi_docs import (
     submit_operation_extra,
     user_set_operation_extra,
 )
-from scat_validator.paths import PathNode
 from scat_validator.reporting import (
     Outcome,
-    build_report,
-    check_batch_envelope,
-    check_single_shape,
     request_failure,
     serialize_failure,
     serialize_report,
@@ -90,7 +92,10 @@ from scat_validator.storage import UNAVAILABLE_ERRORS, Storage
 from scat_validator.submissions import (
     ACCEPT_ROUTE,
     AE_ANNOTATED_SUBMISSIONS_ROUTE,
+    AE_ANNOTATION_JOBS_ROUTE,
     ANNOTATED_SUBMISSIONS_ROUTE,
+    ANNOTATION_JOB_ROUTE,
+    ANNOTATION_JOBS_ROUTE,
     LLM_ROUTE,
     PROPOSAL_ROUTE,
     PROPOSALS_ROUTE,
@@ -99,12 +104,15 @@ from scat_validator.submissions import (
     SUBMISSIONS_ROUTE,
     USER_SET_ROUTE,
     Identity,
+    job_location,
     parse_identity,
+    parse_job_request,
     parse_proposal_identity,
     parse_set_removal,
     parse_username,
     serialize_annotated_submission,
     serialize_export,
+    serialize_job,
     serialize_list,
     serialize_llm_status,
     serialize_proposal,
@@ -121,7 +129,7 @@ from scat_validator.updates import (
     with_user_map,
     without_set,
 )
-from scat_validator.wire import DecodeFailure, JsonValue, decode_document, read_limited_body
+from scat_validator.wire import DecodeFailure, decode_document, read_limited_body
 
 API_TITLE: Final = "SCAT validation API"
 API_VERSION: Final = "0.1.0"
@@ -140,7 +148,9 @@ if not logger.handlers:
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Open storage from DATABASE_URL and load the LLM settings and client from the environment,
-    unless a caller (such as a test) already installed them."""
+    unless a caller (such as a test) already installed them. With both storage and settings the
+    annotation-job dispatcher runs its startup sweep and claim loop; with storage alone only the
+    sweep runs (stage 4 §4.10, Dispatcher)."""
     state = application.state
     created = None
     if getattr(state, "storage", None) is None:
@@ -151,9 +161,20 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     created_client = None
     if state.llm_settings is not None and getattr(state, "llm_client", None) is None:
         created_client = state.llm_client = new_client()
+    dispatcher = None
+    if state.storage is not None and state.llm_settings is not None:
+        dispatcher = state.dispatcher = Dispatcher(
+            state.storage, state.llm_settings, state.llm_client, state.clock
+        )
+        await dispatcher.start()
+    elif state.storage is not None:
+        await _sweep_jobs(state.storage, state.clock)
     try:
         yield
     finally:
+        if dispatcher is not None:
+            await dispatcher.stop()
+            state.dispatcher = None
         if created is not None:
             created.dispose()
             state.storage = None
@@ -162,6 +183,19 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             state.llm_client = None
         if loaded_settings:
             state.llm_settings = None
+
+
+async def _sweep_jobs(storage: Storage, clock: Callable[[], datetime]) -> None:
+    """The startup sweep alone, for a service without LLM settings: ``running`` items become
+    ``interrupted``. Any database error (an outage, or tables not yet migrated) is logged by
+    class only, never its SQL or parameters, and startup continues."""
+    try:
+        count = await run_in_threadpool(storage.interrupt_running, clock(), LLM_JOB_TTL_SECONDS)
+    except SQLAlchemyError as exc:
+        level = logging.WARNING if isinstance(exc, UNAVAILABLE_ERRORS) else logging.ERROR
+        log_fault(exc, level, "storage unavailable")
+    else:
+        logger.info("llm_job_sweep interrupted=%d", count)
 
 
 app = FastAPI(
@@ -178,6 +212,7 @@ app = FastAPI(
 app.state.storage = None
 app.state.llm_settings = None
 app.state.llm_client = None
+app.state.dispatcher = None
 app.state.clock = lambda: datetime.now(UTC)
 
 
@@ -185,66 +220,6 @@ app.state.clock = lambda: datetime.now(UTC)
 def healthz() -> dict[str, str]:
     """Liveness only; performs no dependency checks."""
     return {"status": "ok"}
-
-
-def _decode_failure_issues(failure: DecodeFailure) -> tuple[ErrorCode, IssueCollector]:
-    issues = IssueCollector()
-    root = PathNode.root()
-    if failure.code == "LIMIT_EXCEEDED":
-        issues.add("body", root, "LIMIT_EXCEEDED", Msg.DEPTH)
-        return "INVALID_DOCUMENT", issues
-    if failure.code == "DUPLICATE_PROPERTY":
-        issues.add("body", root, "DUPLICATE_PROPERTY", Msg.DUPLICATE_PROPERTY)
-    else:
-        issues.add("body", root, "INVALID_JSON", Msg.INVALID_JSON)
-    return failure.code, issues
-
-
-def _decode_failure_outcome(mode: Mode, failure: DecodeFailure) -> Outcome:
-    code, issues = _decode_failure_issues(failure)
-    return serialize_failure(request_failure(mode, code, issues))
-
-
-@dataclass(frozen=True, slots=True)
-class Evaluation:
-    """A document that passed gates 3-5 and was evaluated (valid or not)."""
-
-    report: ValidationReport
-    document_bytes: bytes
-    options: QueryOptions
-
-
-def evaluate_document(
-    mode: Mode, body: bytes, query_string: bytes, *, echo_allowed: bool = True
-) -> Outcome | Evaluation:
-    """Gates 3-6 for an already size-checked body. CPU-bound; runs in a worker thread."""
-    try:
-        document = decode_document(body)
-    except DecodeFailure as failure:
-        return _decode_failure_outcome(mode, failure)
-
-    options = parse_query(query_string, echo_allowed=echo_allowed)
-    if not isinstance(options, QueryOptions):
-        return serialize_failure(request_failure(mode, "INVALID_OPTIONS", options))
-
-    value = document.value
-    slots: list[tuple[JsonValue, PathNode]]
-    if mode == "single":
-        shape_issues = check_single_shape(value)
-        slots = [(value, PathNode.root())]
-    else:
-        shape_issues = check_batch_envelope(value)
-        slots = []
-        if shape_issues is None:
-            assert isinstance(value, dict) and isinstance(value["records"], list)
-            records_node = PathNode.root().child("records")
-            slots = [
-                (entry, records_node.child(str(i))) for i, entry in enumerate(value["records"])
-            ]
-    if shape_issues is not None:
-        return serialize_failure(request_failure(mode, "INVALID_DOCUMENT", shape_issues))
-
-    return Evaluation(build_report(mode, slots), document.document_bytes, options)
 
 
 def evaluate_body(mode: Mode, body: bytes, query_string: bytes) -> Outcome:
@@ -428,7 +403,7 @@ def parse_update_body(body: bytes) -> str | Outcome:
     try:
         document = decode_document(body)
     except DecodeFailure as failure:
-        return submission_failure(*_decode_failure_issues(failure))
+        return submission_failure(*decode_failure_issues(failure))
     shape_issues = check_update_shape(document.value)
     if shape_issues is not None:
         return submission_failure("INVALID_DOCUMENT", shape_issues)
@@ -778,6 +753,66 @@ async def _submit_annotated(request: Request, scope: PromptScope) -> Outcome:
     return serialize_annotated_submission(stored)
 
 
+def _batch_failure(code: ErrorCode) -> Outcome:
+    """A ``RequestFailure`` of the job intake routes, which take a batch document."""
+    return serialize_failure(request_failure("batch", code))
+
+
+async def _create_job(request: Request, scope: PromptScope) -> Outcome:
+    """Stage 4 §4.10 intake: the batch gates, configuration, storage, per-record checks, and the
+    job with its items; ``202`` with the first page of the job. Nothing is stored on failure."""
+    body = await _read_body(request, _request_failure("batch"))
+    if isinstance(body, Outcome):
+        return body
+    planned = await run_in_threadpool(plan_job, body, _query_string(request))
+    if isinstance(planned, Outcome):
+        return planned
+    state = request.app.state
+    if state.llm_settings is None:
+        return _batch_failure("LLM_NOT_CONFIGURED")
+    storage = _storage(request)
+    if storage is None:
+        return _batch_failure("STORAGE_UNAVAILABLE")
+    now = state.clock()
+    try:
+        stored = await run_in_threadpool(storage.existing_identities, pending_identities(planned))
+        items = job_items(planned, stored)
+        job_id = await run_in_threadpool(
+            storage.insert_job, scope.name, items, now, LLM_JOB_TTL_SECONDS
+        )
+    except UNAVAILABLE_ERRORS as exc:
+        log_fault(exc, logging.WARNING, "storage unavailable")
+        return _batch_failure("STORAGE_UNAVAILABLE")
+    job = intake_job(job_id, scope.name, items, now, LLM_JOB_TTL_SECONDS)
+    outcome = await run_in_threadpool(serialize_job, job)
+    dispatcher: Dispatcher | None = state.dispatcher
+    if dispatcher is not None:  # on the event loop: wake() is not thread-safe
+        dispatcher.wake()
+    return replace(outcome, status=202, location=job_location(job_id))
+
+
+async def _poll_job(request: Request) -> Outcome:
+    """Stage 4 §4.10 polling: one page of the job's items after ``after``."""
+    rejected = await _require_empty_body(request)
+    if rejected is not None:
+        return rejected
+    parsed = parse_job_request(request.path_params["job_id"], _query_string(request))
+    if isinstance(parsed, IssueCollector):
+        return submission_failure("INVALID_PARAMETERS", parsed)
+    job_id, after = parsed
+    storage = _storage(request)
+    if storage is None:
+        return submission_failure("STORAGE_UNAVAILABLE")
+    try:
+        job = await run_in_threadpool(storage.fetch_job, job_id, request.app.state.clock())
+    except UNAVAILABLE_ERRORS as exc:
+        log_fault(exc, logging.WARNING, "storage unavailable")
+        return submission_failure("STORAGE_UNAVAILABLE")
+    if job is None:
+        return submission_failure("JOB_NOT_FOUND")
+    return await run_in_threadpool(serialize_job, job, after)
+
+
 async def _llm_status(request: Request) -> Outcome:
     rejected = await _require_empty_body(request)
     if rejected is not None:
@@ -857,6 +892,41 @@ async def submit_ae_annotated(request: Request) -> Response:
         lambda: _submit_annotated(request, AE_SCOPE),
         lambda: single_failure("INTERNAL_ERROR"),
     )
+
+
+@app.post(
+    ANNOTATION_JOBS_ROUTE,
+    openapi_extra=annotation_job_operation_extra(),
+    summary="Queue records for LLM annotation",
+    status_code=202,
+)
+async def create_annotation_job(request: Request) -> Response:
+    return await _respond(
+        "POST",
+        ANNOTATION_JOBS_ROUTE,
+        lambda: _create_job(request, FULL_SCOPE),
+        lambda: _batch_failure("INTERNAL_ERROR"),
+    )
+
+
+@app.post(
+    AE_ANNOTATION_JOBS_ROUTE,
+    openapi_extra=ae_annotation_job_operation_extra(),
+    summary="Queue records for LLM adverse-event annotation",
+    status_code=202,
+)
+async def create_ae_annotation_job(request: Request) -> Response:
+    return await _respond(
+        "POST",
+        AE_ANNOTATION_JOBS_ROUTE,
+        lambda: _create_job(request, AE_SCOPE),
+        lambda: _batch_failure("INTERNAL_ERROR"),
+    )
+
+
+@app.get(ANNOTATION_JOB_ROUTE, openapi_extra=job_poll_operation_extra(), summary="Poll a job")
+async def poll_annotation_job(request: Request) -> Response:
+    return await _submission_response("GET", ANNOTATION_JOB_ROUTE, lambda: _poll_job(request))
 
 
 def _restore_response_examples(schema: dict[str, Any]) -> None:

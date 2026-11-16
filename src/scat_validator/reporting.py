@@ -51,6 +51,7 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "NARRATIVE_HAS_MARKUP": "The narrative contains LLM tag markup, so it cannot be annotated.",
     "PROPOSAL_NOT_FOUND": "No unexpired proposal with this id exists for this submission.",
     "SET_NOT_FOUND": "The record has no annotation set with this id.",
+    "JOB_NOT_FOUND": "No unexpired annotation job with this id exists.",
 }
 REPORT_INVALID_MESSAGE: Final = "One or more records are invalid."
 
@@ -77,6 +78,7 @@ HTTP_STATUS: Final[dict[ErrorCode, int]] = {
     "NARRATIVE_HAS_MARKUP": 422,
     "PROPOSAL_NOT_FOUND": 404,
     "SET_NOT_FOUND": 404,
+    "JOB_NOT_FOUND": 404,
 }
 assert f" {MAX_LLM_NARRATIVE_CODE_POINTS}-" in ERROR_MESSAGES["NARRATIVE_TOO_LONG"]
 

@@ -349,10 +349,29 @@ body below. After the response the dispatcher is woken.
 
 ##### `GET /api/v1/annotation-jobs/{job_id}`
 
-`200` with an `AnnotationJob`; `422 INVALID_PARAMETERS` (`INVALID_ID` at `/job_id`) when the id is
-not a UUID in lower-case hyphenated form; `404 JOB_NOT_FOUND` ("No unexpired annotation job with
-this id exists.") when it is unknown or expired; `503 STORAGE_UNAVAILABLE`. Routes without a body
-reject one (`413`), as §4. `Cache-Control: no-store`.
+`200` with one page of an `AnnotationJob`; `422 INVALID_PARAMETERS` (`INVALID_ID` at `/job_id`)
+when the id is not a UUID in lower-case hyphenated form; `404 JOB_NOT_FOUND` ("No unexpired
+annotation job with this id exists.") when it is unknown or expired; `503 STORAGE_UNAVAILABLE`.
+Routes without a body reject one (`413`), as §4. `Cache-Control: no-store`.
+
+The optional query parameter `after` selects a page: a non-negative decimal integer in canonical
+form (no sign, no leading zeros except `0` itself), at most once. A malformed `after` is
+`INVALID_QUERY_PARAMETER`, a repeated one `DUPLICATE_QUERY_PARAMETER`, and any other parameter
+`UNKNOWN_QUERY_PARAMETER` at `/<name>`, each an issue at `location` `query` of a `422
+INVALID_PARAMETERS`. Parameters are checked before storage.
+
+Items are paged by response budget, because each item embeds a whole single-record result (up
+to `MAX_REPORT_BYTES`) and 100 of them can exceed `MAX_RESPONSE_BYTES`. Results are never
+truncated or shortened:
+
+- A page lists the items with `index` greater than `after` (all items when it is absent), in
+  `index` order, adding whole items while the body stays within `MAX_RESPONSE_BYTES`. It lists at
+  least one item when any remain (one item always fits).
+- `next_after` is the last listed index when items remain beyond this page, otherwise `null`.
+  Clients follow it as `after` until it is `null`.
+- An `after` at or beyond the last index gives `items: []` and `next_after: null`.
+- `counts`, `done`, and the job timestamps always describe the whole job.
+- The `202` intake response is the first page, by the same rule.
 
 ```json
 {
@@ -365,16 +384,18 @@ reject one (`413`), as §4. `Cache-Control: no-store`.
   "counts": { "pending": 3, "running": 2, "succeeded": 90, "failed": 1, "rejected": 4, "interrupted": 0 },
   "items": [
     { "index": 0, "case_id": "12345678-1", "username": "demo_annotator", "status": "succeeded",
-      "attempts": 1, "location": "/api/v1/submissions/12345678-1/export?username=demo_annotator",
+      "attempts": 1, "location": "/api/v1/submissions/12345678-1?username=demo_annotator",
       "result": null },
     { "index": 7, "case_id": "12345678-8", "username": "demo_annotator", "status": "failed",
       "attempts": 3, "location": null, "result": { "...": "RequestFailure" } }
-  ]
+  ],
+  "next_after": null
 }
 ```
 
-- `items` lists every item in `index` order. `case_id` and `username` are null when the record did
-  not yield them (a rejected record).
+- `items` lists the page's items in `index` order (every item, unless the job needs more than
+  one page). `case_id` and `username` are null when the record did not yield them (a rejected
+  record).
 - `status` is one of `pending`, `running`, `succeeded`, `failed`, `rejected`, `interrupted`.
   `done` is true when no item is `pending` or `running`; `finished_at` and `expires_at` are set
   then.

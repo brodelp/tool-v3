@@ -155,6 +155,9 @@ def main() -> None:
         "/api/v1/llm",
         "/api/v1/annotated-submissions",
         "/api/v1/annotated-submissions/ae",
+        "/api/v1/annotation-jobs",
+        "/api/v1/annotation-jobs/ae",
+        "/api/v1/annotation-jobs/{job_id}",
     }
     check(
         "GET /openapi.json documents every endpoint",
@@ -182,6 +185,16 @@ def llm_status(server: Server) -> None:
         check(
             "LLM annotation disabled without configuration",
             state == {"enabled": False, "provider": None, "model": None},
+        )
+        valid = (EXAMPLES / "valid-record.json").read_bytes().strip()
+        job = b'{"records":[' + valid + b"]}"
+        status, headers, body = server.request("POST", "/api/v1/annotation-jobs", job, JSON)
+        failure = json.loads(body) if status == 503 else {}
+        check(
+            "annotation job without LLM -> 503 LLM_NOT_CONFIGURED (batch mode), no Location",
+            failure.get("error", {}).get("code") == "LLM_NOT_CONFIGURED"
+            and failure.get("mode") == "batch"
+            and "location" not in headers,
         )
 
 

@@ -383,6 +383,7 @@ type ErrorCode = Literal[
     "NARRATIVE_HAS_MARKUP",
     "PROPOSAL_NOT_FOUND",
     "SET_NOT_FOUND",
+    "JOB_NOT_FOUND",
 ]
 
 
@@ -746,6 +747,109 @@ class LlmProposal(TypedDict):
 LlmProposal.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
 
 
+# ---------------------------------------------------------------- stage 4: annotation jobs
+
+JobTimestamp = Annotated[
+    str | None,
+    Field(
+        json_schema_extra={"format": "date-time"},
+        description="RFC 3339 UTC with microseconds and `Z`; null until the job is done.",
+    ),
+]
+
+
+class JobCounts(TypedDict):
+    """Items of the whole job by status (every page carries the same counts)."""
+
+    pending: Annotated[int, Field(ge=0)]
+    running: Annotated[int, Field(ge=0)]
+    succeeded: Annotated[int, Field(ge=0)]
+    failed: Annotated[int, Field(ge=0)]
+    rejected: Annotated[int, Field(ge=0)]
+    interrupted: Annotated[int, Field(ge=0)]
+
+
+JobCounts.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
+
+
+class AnnotationJobItem(TypedDict):
+    """One record of a job, by its position in the uploaded `records`."""
+
+    index: Annotated[int, Field(ge=0, description="Position of the record in `records`.")]
+    case_id: Annotated[
+        str | None, Field(description="Null when the record did not yield a valid `case_id`.")
+    ]
+    username: Annotated[
+        str | None, Field(description="Null when the record did not yield a valid `username`.")
+    ]
+    status: JobStatus
+    attempts: Annotated[int, Field(ge=0, description="Provider attempts started.")]
+    location: Annotated[
+        str | None,
+        Field(description="The export URL of the stored submission; only when `succeeded`."),
+    ]
+    result: Annotated[
+        ValidationReport | RequestFailure | None,
+        Field(
+            description=(
+                "Only when `rejected` or `failed`: exactly the body `POST "
+                "/api/v1/annotated-submissions` returns for the record (a single-mode "
+                "ValidationReport or RequestFailure)."
+            )
+        ),
+    ]
+
+
+AnnotationJobItem.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
+
+
+class AnnotationJob(TypedDict):
+    """An annotation job and one page of its items (stage 4 §4.10)."""
+
+    job_id: Annotated[
+        str,
+        Field(
+            json_schema_extra={"format": "uuid"},
+            description="Lower-case hyphenated UUID naming the job.",
+        ),
+    ]
+    scope: Annotated[
+        Literal["full", "ae"], Field(description="The prompt scope: `full`, or `ae` (§4.9).")
+    ]
+    created_at: Annotated[
+        str,
+        Field(
+            json_schema_extra={"format": "date-time"},
+            description="When the job was accepted: RFC 3339 UTC with microseconds and `Z`.",
+        ),
+    ]
+    finished_at: JobTimestamp
+    expires_at: JobTimestamp
+    done: Annotated[bool, Field(description="True when no item is `pending` or `running`.")]
+    counts: JobCounts
+    items: Annotated[
+        list[AnnotationJobItem],
+        Field(
+            description=(
+                "Items with `index` greater than `after` (all when absent), in index order, "
+                "as many whole items as fit the response budget; at least one when any remain."
+            )
+        ),
+    ]
+    next_after: Annotated[
+        int | None,
+        Field(
+            ge=0,
+            description=(
+                "The last listed index when more items follow (send it as `after`); otherwise null."
+            ),
+        ),
+    ]
+
+
+AnnotationJob.__pydantic_config__ = ConfigDict(extra="forbid")  # type: ignore[attr-defined]
+
+
 VALIDATION_REPORT_ADAPTER: Final[TypeAdapter[ValidationReport]] = TypeAdapter(ValidationReport)
 REQUEST_FAILURE_ADAPTER: Final[TypeAdapter[RequestFailure]] = TypeAdapter(RequestFailure)
 SUBMISSION_RECEIPT_ADAPTER: Final[TypeAdapter[SubmissionReceipt]] = TypeAdapter(SubmissionReceipt)
@@ -755,3 +859,4 @@ SUBMISSION_UPDATE_ADAPTER: Final[TypeAdapter[SubmissionUpdate]] = TypeAdapter(Su
 SUBMISSION_LIST_ADAPTER: Final[TypeAdapter[SubmissionList]] = TypeAdapter(SubmissionList)
 LLM_STATUS_ADAPTER: Final[TypeAdapter[LlmStatus]] = TypeAdapter(LlmStatus)
 LLM_PROPOSAL_ADAPTER: Final[TypeAdapter[LlmProposal]] = TypeAdapter(LlmProposal)
+ANNOTATION_JOB_ADAPTER: Final[TypeAdapter[AnnotationJob]] = TypeAdapter(AnnotationJob)

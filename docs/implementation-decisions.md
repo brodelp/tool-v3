@@ -421,6 +421,12 @@ leave open:
   SQL, so tests control backoff and expiry without sleeping.
 - **Batch failures.** Batch-level failures on the job POST routes are `RequestFailure`s in `batch`
   mode, as for `POST /api/v1/validate-batch`; per-record failures are stored as item results.
+- **Paged job items.** Job items are paged by response budget (`after`, `next_after`) because
+  each item embeds a full single-record result, so 100 rejected records can exceed
+  `MAX_RESPONSE_BYTES`; results are never truncated.
+- **Job route failure envelopes.** The intake routes answer every failure, including 503 and
+  500, as a `batch`-mode `RequestFailure`, as `POST /api/v1/validate-batch` does. The poll route
+  is addressed by id, like the proposal routes, so its failures are `SubmissionFailure`s.
 - **Pipeline module.** The shared annotate-and-store pipeline lives in
   `src/scat_validator/annotation_pipeline.py`, not under `llm/`, because the `llm` package never
   imports storage.

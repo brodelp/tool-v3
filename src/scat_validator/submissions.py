@@ -5,6 +5,7 @@ tested directly and reused by a later ingestion design.
 """
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -12,7 +13,7 @@ from typing import Final
 from urllib.parse import quote
 from uuid import UUID
 
-from scat_validator.config import MAX_RESPONSE_BYTES, OFFSET_UNIT
+from scat_validator.config import JOB_STATUSES, MAX_RESPONSE_BYTES, OFFSET_UNIT
 from scat_validator.contracts import (
     LLM_STATUS_ADAPTER,
     SUBMISSION_FAILURE_ADAPTER,
@@ -39,7 +40,13 @@ from scat_validator.reporting import (
     Outcome,
     ResponseBudgetExceeded,
 )
-from scat_validator.storage import StoredProposal, StoredSubmission, SubmissionVersion
+from scat_validator.storage import (
+    StoredJob,
+    StoredJobItem,
+    StoredProposal,
+    StoredSubmission,
+    SubmissionVersion,
+)
 from scat_validator.updates import entity_tag
 from scat_validator.validation import ValueProblem, case_id_problem, username_problem
 from scat_validator.wire import contains_forbidden_code_point
@@ -54,8 +61,16 @@ SETS_ROUTE: Final = SUBMISSION_ROUTE + "/annotation-sets"
 PROPOSALS_ROUTE: Final = SUBMISSION_ROUTE + "/llm-proposals"
 PROPOSAL_ROUTE: Final = PROPOSALS_ROUTE + "/{proposal_id}"
 ACCEPT_ROUTE: Final = PROPOSAL_ROUTE + "/accept"
+ANNOTATION_JOBS_ROUTE: Final = "/api/v1/annotation-jobs"
+AE_ANNOTATION_JOBS_ROUTE: Final = ANNOTATION_JOBS_ROUTE + "/ae"
+ANNOTATION_JOB_ROUTE: Final = ANNOTATION_JOBS_ROUTE + "/{job_id}"
 USERNAME_PARAMETER: Final = "username"
 SET_ID_PARAMETER: Final = "set_id"
+AFTER_PARAMETER: Final = "after"
+# Canonical non-negative decimal: no sign, no leading zeros except "0" itself, ASCII digits.
+_AFTER_PATTERN: Final = re.compile(r"0|[1-9][0-9]*")
+# Any larger ``after`` selects nothing, as this does: job indexes are below MAX_BATCH_RECORDS.
+_AFTER_CAP: Final = 10**18
 
 type _ValueCheck = Callable[[list[str], IssueCollector], str | None]
 
@@ -150,16 +165,34 @@ def _parse_username_query(query_string: bytes, issues: IssueCollector) -> str | 
     ]
 
 
-def _check_proposal_id(value: str, issues: IssueCollector) -> UUID | None:
-    """Only the canonical lower-case hyphenated form names a proposal."""
+def _check_uuid(value: str, name: str, message: str, issues: IssueCollector) -> UUID | None:
+    """Only the canonical lower-case hyphenated form names a proposal or a job."""
     try:
         parsed: UUID | None = UUID(value)
     except ValueError:
         parsed = None
     if parsed is None or str(parsed) != value:
-        issues.add("path", PathNode.root().child("proposal_id"), "INVALID_ID", Msg.PROPOSAL_ID)
+        issues.add("path", PathNode.root().child(name), "INVALID_ID", message)
         return None
     return parsed
+
+
+def _check_proposal_id(value: str, issues: IssueCollector) -> UUID | None:
+    return _check_uuid(value, "proposal_id", Msg.PROPOSAL_ID, issues)
+
+
+def _check_after(values: list[str], issues: IssueCollector) -> str | None:
+    """The optional ``after`` parameter: at most once, a canonical non-negative integer."""
+    if not values:
+        return None
+    node = PathNode.root().child(AFTER_PARAMETER)
+    value = _single_value(values, node, issues, Msg.AFTER, Msg.AFTER_REPEATED)
+    if value is None:
+        return None
+    if _AFTER_PATTERN.fullmatch(value) is None:
+        issues.add("query", node, "INVALID_QUERY_PARAMETER", Msg.AFTER)
+        return None
+    return value
 
 
 def parse_identity(case_id: str, query_string: bytes) -> Identity | IssueCollector:
@@ -198,6 +231,19 @@ def parse_set_removal(case_id: str, query_string: bytes) -> tuple[Identity, str]
     if issues.count or not case_id_ok or username is None or set_id is None:
         return issues
     return Identity(case_id, username), set_id
+
+
+def parse_job_request(job_id: str, query_string: bytes) -> tuple[UUID, int | None] | IssueCollector:
+    """The ``{job_id}`` path segment and the optional ``after`` query parameter."""
+    issues = IssueCollector()
+    parsed = _check_uuid(job_id, "job_id", Msg.JOB_ID, issues)
+    checks: dict[str, _ValueCheck] = {AFTER_PARAMETER: _check_after}
+    after = _parse_query(query_string, issues, checks, Msg.UNKNOWN_JOB_QUERY)[AFTER_PARAMETER]
+    if issues.count or parsed is None:
+        return issues
+    if after is None:
+        return parsed, None
+    return parsed, int(after) if len(after) < len(str(_AFTER_CAP)) else _AFTER_CAP
 
 
 def parse_username(query_string: bytes) -> str | IssueCollector:
@@ -350,3 +396,74 @@ def serialize_proposal(
     if len(body) > MAX_RESPONSE_BYTES:
         raise ResponseBudgetExceeded
     return Outcome(201, body, None, 0)
+
+
+def job_location(job_id: UUID) -> str:
+    return f"{ANNOTATION_JOBS_ROUTE}/{job_id}"
+
+
+def _optional_timestamp(value: datetime | None) -> str | None:
+    return None if value is None else format_timestamp(value)
+
+
+def _job_item(item: StoredJobItem) -> bytes:
+    """One ``AnnotationJobItem``, its stored result text embedded unchanged."""
+    location = None
+    if item.status == "succeeded":
+        assert item.case_id is not None and item.username is not None  # pending had both
+        location = export_location(item.case_id, item.username)
+    head = _compact(
+        {
+            "index": item.index,
+            "case_id": item.case_id,
+            "username": item.username,
+            "status": item.status,
+            "attempts": item.attempts,
+            "location": location,
+        }
+    )
+    result = b"null" if item.result_json is None else item.result_json.encode()
+    return b"".join((head[:-1], b',"result":', result, b"}"))
+
+
+def _job_tail(next_after: int | None) -> bytes:
+    return b'],"next_after":' + (b"null" if next_after is None else str(next_after).encode()) + b"}"
+
+
+def serialize_job(job: StoredJob, after: int | None = None) -> Outcome:
+    """One page of an ``AnnotationJob`` (stage 4 §4.10): the items after ``after`` in index
+    order, as many whole items as keep the body within ``MAX_RESPONSE_BYTES`` (at least one when
+    any remain). Each item embeds its stored result text unchanged, so a page of large rejected
+    reports cannot be shrunk, only split. ``counts`` and ``done`` describe the whole job."""
+    counts = dict.fromkeys(JOB_STATUSES, 0)
+    for item in job.items:
+        counts[item.status] += 1
+    head = _compact(
+        {
+            "job_id": str(job.id),
+            "scope": job.scope,
+            "created_at": format_timestamp(job.created_at),
+            "finished_at": _optional_timestamp(job.finished_at),
+            "expires_at": _optional_timestamp(job.expires_at),
+            "done": counts["pending"] == 0 and counts["running"] == 0,
+            "counts": counts,
+        }
+    )
+    prefix = head[:-1] + b',"items":['
+    remaining = [item for item in job.items if after is None or item.index > after]
+    # The longest tail this page can end with: null, or an index of this job.
+    last_index = job.items[-1].index if job.items else 0
+    size = len(prefix) + max(len(_job_tail(None)), len(_job_tail(last_index)))
+    parts: list[bytes] = []
+    for item in remaining:
+        encoded = _job_item(item)
+        added = len(encoded) + (1 if parts else 0)  # the separating comma
+        if parts and size + added > MAX_RESPONSE_BYTES:
+            break
+        parts.append(encoded)
+        size += added
+    next_after = remaining[len(parts) - 1].index if len(parts) < len(remaining) else None
+    body = b"".join((prefix, b",".join(parts), _job_tail(next_after)))
+    if len(body) > MAX_RESPONSE_BYTES:  # a single item always fits: a result is a bounded report
+        raise ResponseBudgetExceeded
+    return Outcome(200, body, None, 0)

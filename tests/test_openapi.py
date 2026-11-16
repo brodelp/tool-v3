@@ -10,8 +10,16 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from scat_validator.api import app
-from scat_validator.config import LABELS, MAX_SAFE_NUMBER, MODEL_PATTERN, PROVIDER_PATTERN
+from scat_validator.config import (
+    JOB_STATUSES,
+    LABELS,
+    MAX_RESPONSE_BYTES,
+    MAX_SAFE_NUMBER,
+    MODEL_PATTERN,
+    PROVIDER_PATTERN,
+)
 from scat_validator.contracts import (
+    ANNOTATION_JOB_ADAPTER,
     CASE_ID_PATTERN,
     LLM_PROPOSAL_ADAPTER,
     LLM_STATUS_ADAPTER,
@@ -23,6 +31,7 @@ from scat_validator.contracts import (
     BatchEnvelope,
     Record,
 )
+from scat_validator.jobs import Dispatcher
 from scat_validator.openapi_docs import (
     EXAMPLE_ANNOTATED_RECORD,
     EXAMPLE_INVALID_BATCH,
@@ -31,6 +40,7 @@ from scat_validator.openapi_docs import (
 from scat_validator.storage import Storage
 from tests.helpers import (
     call,
+    call_async,
     delete,
     dumps,
     example_bytes,
@@ -258,6 +268,7 @@ def test_response_variants(spec: dict[str, Any]) -> None:
         "NARRATIVE_HAS_MARKUP",
         "PROPOSAL_NOT_FOUND",
         "SET_NOT_FOUND",
+        "JOB_NOT_FOUND",
     }
     assert schemas(spec)["Location"]["enum"] == ["body", "query", "path", "llm_output"]
 
@@ -784,3 +795,128 @@ def test_ae_annotated_submission_describes_its_scope(spec: dict[str, Any]) -> No
     assert "label_scope" not in full
     # Everything after the first paragraph is shared.
     assert post["description"].split("\n\n", 1)[1] == full.split("\n\n", 1)[1]
+
+
+# ---------------------------------------------------------------- stage 4 annotation jobs (L20)
+
+ANNOTATION_JOBS = "/api/v1/annotation-jobs"
+AE_ANNOTATION_JOBS = ANNOTATION_JOBS + "/ae"
+ANNOTATION_JOB = ANNOTATION_JOBS + "/{job_id}"
+JOB_VARYING = ("job_id", "created_at", "finished_at", "expires_at")
+
+
+@pytest.mark.parametrize("route", [ANNOTATION_JOBS, AE_ANNOTATION_JOBS])
+def test_annotation_jobs_are_documented(spec: dict[str, Any], route: str) -> None:
+    post = spec["paths"][route]["post"]
+    assert post["parameters"] == []
+    assert post["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/BatchEnvelope"
+    }
+    statuses = {"202", "400", "413", "415", "422", "500", "503"}
+    assert set(post["responses"]) == statuses
+    accepted = post["responses"]["202"]
+    assert "Location" in accepted["headers"]
+    assert accepted["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/AnnotationJob"
+    }
+    for status in statuses - {"202"}:
+        schema = post["responses"][status]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/RequestFailure"}
+    for status in ("400", "422", "503"):
+        for example in examples_for(post, status).values():
+            REQUEST_FAILURE_ADAPTER.validate_json(json.dumps(example["value"]), strict=True)
+            assert example["value"]["mode"] == "batch"
+    for example in examples_for(post, "202").values():
+        ANNOTATION_JOB_ADAPTER.validate_json(json.dumps(example["value"]), strict=True)
+    assert "no authentication" in post["description"]
+
+    get = spec["paths"][ANNOTATION_JOB]["get"]
+    assert [(p["name"], p["in"], p["required"]) for p in get["parameters"]] == [
+        ("job_id", "path", True),
+        ("after", "query", False),
+    ]
+    assert set(get["responses"]) == {"200", "404", "413", "422", "500", "503"}
+    assert get["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/AnnotationJob"
+    }
+    for status in ("404", "413", "422", "500", "503"):
+        schema = get["responses"][status]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/SubmissionFailure"}
+    not_found = examples_for(get, "404")["job_not_found"]["value"]
+    assert not_found["error"] == {
+        "code": "JOB_NOT_FOUND",
+        "message": "No unexpired annotation job with this id exists.",
+    }
+    for example in examples_for(get, "200").values():
+        ANNOTATION_JOB_ADAPTER.validate_json(json.dumps(example["value"]), strict=True)
+    for operation in (post, get):
+        for response in operation["responses"].values():
+            assert response["headers"]["Cache-Control"]["schema"]["enum"] == ["no-store"]
+    assert "next_after" in get["description"]
+    assert str(MAX_RESPONSE_BYTES) in get["description"]
+
+    job = schemas(spec)["AnnotationJob"]
+    assert job["additionalProperties"] is False
+    assert set(job["required"]) == {
+        "job_id",
+        "scope",
+        "created_at",
+        "finished_at",
+        "expires_at",
+        "done",
+        "counts",
+        "items",
+        "next_after",
+    }
+    item = schemas(spec)["AnnotationJobItem"]
+    assert item["properties"]["status"]["enum"] == list(JOB_STATUSES)
+    assert set(schemas(spec)["JobCounts"]["required"]) == set(JOB_STATUSES)
+    assert "JOB_NOT_FOUND" in schemas(spec)["ErrorCode"]["enum"]
+
+
+def _without_varying(job: dict[str, Any]) -> dict[str, Any]:
+    return {name: value for name, value in job.items() if name not in JOB_VARYING}
+
+
+@pytest.mark.anyio
+async def test_annotation_job_examples_match_runtime(
+    spec: dict[str, Any], storage: Storage, llm: Callable[[Any], Any]
+) -> None:
+    post = spec["paths"][ANNOTATION_JOBS]["post"]
+    request = post["requestBody"]["content"]["application/json"]["examples"]["job"]["value"]
+    body = dumps(request)
+    llm("unused")
+    app.state.llm_settings = None  # the fixture restores it
+    unconfigured = await call_async("POST", ANNOTATION_JOBS, body=body)
+    assert unconfigured.json() == examples_for(post, "503")["not_configured"]["value"]
+    invalid = await call_async("POST", ANNOTATION_JOBS, body=b"{")
+    assert invalid.json() == examples_for(post, "400")["invalid_json"]["value"]
+    empty = await call_async("POST", ANNOTATION_JOBS, body=b'{"records":[]}')
+    assert empty.json() == examples_for(post, "422")["no_records"]["value"]
+    echo = await call_async("POST", ANNOTATION_JOBS, body=body, query="echo=true")
+    assert echo.json() == examples_for(post, "422")["query_parameter"]["value"]
+
+    llm("<SDRUG>Aspirin</SDRUG> caused nausea.")
+    accepted = await call_async("POST", ANNOTATION_JOBS, body=body)
+    assert accepted.status == 202
+    documented = examples_for(post, "202")["job"]["value"]
+    assert _without_varying(accepted.json()) == _without_varying(documented)
+    job_id = accepted.json()["job_id"]
+    state = app.state
+    worker = Dispatcher(state.storage, state.llm_settings, state.llm_client, state.clock)
+    await worker.run_until_idle()
+
+    get = spec["paths"][ANNOTATION_JOB]["get"]
+    polled = await call_async("GET", f"{ANNOTATION_JOBS}/{job_id}", headers=[])
+    assert polled.status == 200
+    done = examples_for(get, "200")["done"]["value"]
+    assert _without_varying(polled.json()) == _without_varying(done)
+    assert all(polled.json()[name] is not None for name in JOB_VARYING)
+    unknown = await call_async(
+        "GET", f"{ANNOTATION_JOBS}/5b0c2a4e-3f1d-4c55-9a0e-6d2f8b7c1e90", headers=[]
+    )
+    assert unknown.json() == examples_for(get, "404")["job_not_found"]["value"]
+    bad_id = await call_async("GET", f"{ANNOTATION_JOBS}/5B0C", headers=[])
+    assert bad_id.json() == examples_for(get, "422")["invalid_job_id"]["value"]
+    bad_after = await call_async("GET", f"{ANNOTATION_JOBS}/{job_id}", query="after=01", headers=[])
+    assert bad_after.json() == examples_for(get, "422")["invalid_after"]["value"]

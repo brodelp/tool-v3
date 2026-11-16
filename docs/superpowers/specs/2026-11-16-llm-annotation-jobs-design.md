@@ -61,9 +61,19 @@ After the response the dispatcher is woken.
 
 ### `GET /api/v1/annotation-jobs/{job_id}`
 
-`200` with an `AnnotationJob`; `422 INVALID_PARAMETERS` (`INVALID_ID` at `/job_id`) when the id
-is not a UUID; `404 JOB_NOT_FOUND` when unknown or expired; `503 STORAGE_UNAVAILABLE`. Routes
-without a body reject one (`413`), as §4.
+`200` with one page of an `AnnotationJob`; `422 INVALID_PARAMETERS` (`INVALID_ID` at `/job_id`)
+when the id is not a UUID; `404 JOB_NOT_FOUND` when unknown or expired; `503
+STORAGE_UNAVAILABLE`. Routes without a body reject one (`413`), as §4.
+
+Items are paged by response budget, because each item embeds a whole single-record result and
+100 of them can exceed `MAX_RESPONSE_BYTES` (a measured worst case was 10,867,777 bytes for a
+5,175,903-byte upload); results are never truncated. The optional query parameter `after` (a
+canonical non-negative decimal integer, at most once; anything else, or any other parameter, is
+`422 INVALID_PARAMETERS` at `query`) selects the items with a greater `index`. A page adds whole
+items in `index` order while the body stays within `MAX_RESPONSE_BYTES`, at least one when any
+remain. `next_after` is the last listed index when more follow, else `null`. An `after` at or
+past the last index gives `items: []`. `counts`, `done`, and the timestamps describe the whole
+job, and the `202` intake response is the first page.
 
 ```json
 {
@@ -76,16 +86,17 @@ without a body reject one (`413`), as §4.
   "counts": { "pending": 3, "running": 2, "succeeded": 90, "failed": 1, "rejected": 4, "interrupted": 0 },
   "items": [
     { "index": 0, "case_id": "12345678-1", "username": "demo_annotator", "status": "succeeded",
-      "attempts": 1, "location": "/api/v1/submissions/12345678-1/export?username=demo_annotator",
+      "attempts": 1, "location": "/api/v1/submissions/12345678-1?username=demo_annotator",
       "result": null },
     { "index": 7, "case_id": "12345678-8", "username": "demo_annotator", "status": "failed",
       "attempts": 3, "location": null, "result": { "...": "RequestFailure" } }
-  ]
+  ],
+  "next_after": null
 }
 ```
 
-- `items` lists every item in `index` order. `case_id` and `username` are null when the record
-  did not yield them (a rejected record).
+- `items` lists the page's items in `index` order. `case_id` and `username` are null when the
+  record did not yield them (a rejected record).
 - `status` is one of `pending`, `running`, `succeeded`, `failed`, `rejected`, `interrupted`.
   `done` is true when no item is `pending` or `running`; `finished_at` and `expires_at` are set
   then.
