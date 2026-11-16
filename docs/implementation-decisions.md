@@ -427,6 +427,9 @@ leave open:
 - **Job route failure envelopes.** The intake routes answer every failure, including 503 and
   500, as a `batch`-mode `RequestFailure`, as `POST /api/v1/validate-batch` does. The poll route
   is addressed by id, like the proposal routes, so its failures are `SubmissionFailure`s.
+- **Shutdown while storing.** Shutdown is best-effort (§4.10): cancelling an item while its record
+  is being stored can leave the record stored and the item `interrupted`; resubmitting that record
+  then gets `ALREADY_SUBMITTED`.
 - **Pipeline module.** The shared annotate-and-store pipeline lives in
   `src/scat_validator/annotation_pipeline.py`, not under `llm/`, because the `llm` package never
   imports storage.

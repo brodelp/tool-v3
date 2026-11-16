@@ -39,6 +39,9 @@ application.
 | `DELETE /api/v1/submissions/{case_id}/annotation-sets?username=…&set_id=…` | Remove one `llm` annotation set (`If-Match` required) |
 | `POST /api/v1/annotated-submissions` | Validate one record, annotate its narrative with the configured model, and store both; returns the export (201). Nothing is stored on any failure |
 | `POST /api/v1/annotated-submissions/ae` | The same, but the model is asked only for adverse events: the stored set holds `AE` annotations and records `"label_scope":["AE"]` |
+| `POST /api/v1/annotation-jobs` | Queue up to 100 records for LLM annotation as a job; `202` with a job id and `Location` (stage 4 §4.10) |
+| `POST /api/v1/annotation-jobs/ae` | The same, with the AE-only scope of `/annotated-submissions/ae` |
+| `GET /api/v1/annotation-jobs/{job_id}` | Poll a job: per-record outcomes, `counts`, and `done`; items are paged (`?after=<index>`, `next_after`) |
 | `GET /healthz` | Liveness: exactly `{"status":"ok"}` (no database check) |
 | `GET /docs`, `GET /openapi.json` | Interactive documentation and the OpenAPI contract |
 | `GET /` | The annotation frontend (when built; always in the Compose image) |
@@ -339,6 +342,28 @@ curl --include --header 'Content-Type: application/json' --data-binary '@example
 
 To annotate adverse events only, post to `/api/v1/annotated-submissions/ae` instead. Its set has
 the same id as a full run of that model (`llm:<provider>:<model>`), so the two replace each other.
+
+### Annotation jobs
+
+To annotate many records without holding a request open, post a batch (`{"records": [...]}`, up to 100
+records) as a job. The `202` response is the first page of the job and its `Location` header is the
+poll URL; each record is stored with its LLM set or not at all, as with `/annotated-submissions`.
+The `/ae` variant, `POST /api/v1/annotation-jobs/ae`, uses the AE-only scope.
+
+```bash
+# Post a job and keep its Location header
+LOC=$(curl -s -D - -o /dev/null --header 'Content-Type: application/json' --data-binary '@examples/valid-batch.json' http://localhost:8000/api/v1/annotation-jobs | tr -d '\r' | awk 'tolower($1)=="location:" {print $2}')
+
+# Poll until "done" is true
+curl -s "http://localhost:8000$LOC"
+```
+
+`GET /api/v1/annotation-jobs/{job_id}` pages its items by response budget: while `next_after` is not
+`null`, fetch the next page with `?after=<next_after>`. `counts` and `done` always cover the whole job.
+
+Jobs run in the service process, so they are best-effort. When the service restarts, items that were
+running become `interrupted` (resubmit those records); `pending` items resume when the LLM is
+configured. A job expires 24 hours after it finishes, and then polling it returns `404 JOB_NOT_FOUND`.
 
 The model must return the narrative unchanged with only tags added; if its output does not
 reproduce the narrative exactly, the run fails rather than guessing, and running it again may
