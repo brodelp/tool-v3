@@ -564,7 +564,7 @@ class Storage:
         )
         statement = (
             update(items)
-            .where(tuple_(items.c.job_id, items.c.index).in_(candidate))
+            .where(tuple_(items.c.job_id, items.c.index) == candidate.scalar_subquery())
             .values(status="running", attempts=items.c.attempts + 1)
             .returning(
                 items.c.job_id,
@@ -608,12 +608,17 @@ class Storage:
         items = annotation_job_items
         statement = (
             update(items)
-            .where(items.c.job_id == job_id, items.c.index == index)
+            .where(items.c.job_id == job_id, items.c.index == index, items.c.status == "running")
             .values(status=status, result_json=result_json, record_json=None)
         )
         with self.engine.begin() as connection:
-            connection.execute(statement)
-            _finish_jobs(connection, now, ttl_seconds, job_id)
+            # Serialize finishers of one job: at READ COMMITTED two of them could otherwise each
+            # see the other's item still running and leave the job unfinished.
+            connection.execute(
+                select(annotation_jobs.c.id).where(annotation_jobs.c.id == job_id).with_for_update()
+            )
+            if connection.execute(statement).rowcount == 1:
+                _finish_jobs(connection, now, ttl_seconds, job_id)
 
     def interrupt_running(self, now: datetime, ttl_seconds: int) -> int:
         """Startup sweep: running items become interrupted; finished jobs get their times."""

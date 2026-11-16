@@ -1,5 +1,7 @@
 """Stage 4 spec §3 and §4.10: stored annotation jobs (migration 0005)."""
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -158,3 +160,60 @@ def test_existing_identities(storage: Storage) -> None:
     asked = [("c1", "u"), ("c1", "v"), ("c2", "v"), ("c3", "u")]
     assert storage.existing_identities(asked) == {("c1", "u"), ("c2", "v")}
     assert storage.existing_identities([]) == set()
+
+
+def test_finish_after_interrupt_leaves_item_interrupted(storage: Storage) -> None:
+    job_id = storage.insert_job("full", [pending(0), pending(1)], NOW, TTL)
+    assert storage.claim_item(NOW) is not None
+    assert storage.interrupt_running(NOW, TTL) == 1
+    storage.finish_item(job_id, 0, "succeeded", None, NOW, TTL)
+    job = storage.fetch_job(job_id, NOW)
+    assert job is not None and [i.status for i in job.items] == ["interrupted", "pending"]
+    assert job.finished_at is None
+
+
+def test_concurrent_finishers_finish_the_job(storage: Storage) -> None:
+    job_id = storage.insert_job("full", [pending(0), pending(1)], NOW, TTL)
+    assert storage.claim_item(NOW) and storage.claim_item(NOW)
+    done = NOW + timedelta(seconds=5)
+    other = threading.Thread(
+        target=storage.finish_item, args=(job_id, 0, "succeeded", None, done, TTL)
+    )
+    with storage.engine.connect() as first:
+        # The first finisher holds the job lock with its own item done but uncommitted.
+        first.execute(
+            text("SELECT id FROM annotation_jobs WHERE id = :j FOR UPDATE"), {"j": job_id}
+        )
+        first.execute(
+            text(
+                "UPDATE annotation_job_items SET status='succeeded', record_json=NULL "
+                "WHERE job_id=:j AND index=1"
+            ),
+            {"j": job_id},
+        )
+        other.start()
+        deadline = time.monotonic() + 10
+        blocked = False
+        while time.monotonic() < deadline and not blocked:
+            with storage.engine.connect() as probe:
+                blocked = bool(
+                    probe.execute(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' "
+                            "AND datname = current_database()"
+                        )
+                    ).scalar_one()
+                )
+            if not blocked:
+                time.sleep(0.02)
+        assert blocked, "second finisher did not wait for the job lock"
+        first.execute(
+            text("UPDATE annotation_jobs SET finished_at=NULL WHERE id=:j"),
+            {"j": job_id},
+        )
+        first.commit()
+    other.join(timeout=10)
+    assert not other.is_alive()
+    job = storage.fetch_job(job_id, done)
+    assert job is not None and job.finished_at == done
+    assert [i.status for i in job.items] == ["succeeded", "succeeded"]
