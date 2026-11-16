@@ -26,7 +26,6 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import Response
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.types import Scope
@@ -59,7 +58,7 @@ from scat_validator.http_gates import (
     media_type_supported,
 )
 from scat_validator.job_intake import intake_job, job_items, pending_identities, plan_job
-from scat_validator.jobs import Dispatcher
+from scat_validator.jobs import Dispatcher, sweep_jobs
 from scat_validator.llm.prompt import AE_SCOPE, FULL_SCOPE, PromptScope
 from scat_validator.llm.providers import new_client
 from scat_validator.llm.settings import LlmSettings, load_llm_settings
@@ -168,7 +167,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         )
         await dispatcher.start()
     elif state.storage is not None:
-        await _sweep_jobs(state.storage, state.clock)
+        await sweep_jobs(state.storage, state.clock)
     try:
         yield
     finally:
@@ -183,19 +182,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             state.llm_client = None
         if loaded_settings:
             state.llm_settings = None
-
-
-async def _sweep_jobs(storage: Storage, clock: Callable[[], datetime]) -> None:
-    """The startup sweep alone, for a service without LLM settings: ``running`` items become
-    ``interrupted``. Any database error (an outage, or tables not yet migrated) is logged by
-    class only, never its SQL or parameters, and startup continues."""
-    try:
-        count = await run_in_threadpool(storage.interrupt_running, clock(), LLM_JOB_TTL_SECONDS)
-    except SQLAlchemyError as exc:
-        level = logging.WARNING if isinstance(exc, UNAVAILABLE_ERRORS) else logging.ERROR
-        log_fault(exc, level, "storage unavailable")
-    else:
-        logger.info("llm_job_sweep interrupted=%d", count)
 
 
 app = FastAPI(

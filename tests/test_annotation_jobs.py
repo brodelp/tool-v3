@@ -608,3 +608,26 @@ async def test_lifespan_sweep_survives_unmigrated_tables(
         assert app.state.dispatcher is None
     assert "storage unavailable type=ProgrammingError" in caplog.text
     assert "SECRET" not in caplog.text
+
+
+async def test_lifespan_with_settings_survives_unmigrated_tables(
+    storage: Storage,
+    llm: Install,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    llm(OUTPUT)
+    caplog.set_level(logging.DEBUG)
+
+    def missing_table(now: Any, ttl_seconds: int) -> int:
+        raise ProgrammingError("UPDATE SECRETSQL", {"p": "SECRETPARAM"}, Exception("SECRETMSG"))
+
+    monkeypatch.setattr(storage, "interrupt_running", missing_table)
+    async with lifespan(app):
+        dispatcher = app.state.dispatcher
+        assert isinstance(dispatcher, Dispatcher)  # the loop still starts after the sweep fails
+        job = await created_job(batch(record("5001-1")))
+        assert job["counts"]["pending"] == 1
+    assert app.state.dispatcher is None
+    assert "storage unavailable type=ProgrammingError" in caplog.text
+    assert "SECRET" not in caplog.text

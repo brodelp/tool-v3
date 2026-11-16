@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Final, Literal
 
 import httpx
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
 from scat_validator.annotation_pipeline import (
@@ -86,6 +87,19 @@ def _log_item(item: ClaimedItem, status: str, attempts: int, reason: str) -> Non
     )
 
 
+async def sweep_jobs(storage: Storage, clock: Callable[[], datetime]) -> None:
+    """The startup sweep: ``running`` items become ``interrupted``. Any database error (an
+    outage, or tables not yet migrated) is logged by class and location only, never its SQL,
+    parameters, or message, and startup continues."""
+    try:
+        count = await run_in_threadpool(storage.interrupt_running, clock(), LLM_JOB_TTL_SECONDS)
+    except SQLAlchemyError as exc:
+        level = logging.WARNING if isinstance(exc, UNAVAILABLE_ERRORS) else logging.ERROR
+        log_fault(exc, level, "storage unavailable")
+    else:
+        logger.info("llm_job_sweep interrupted=%d", count)
+
+
 class Dispatcher:
     """Claims and runs job items. ``start``/``stop`` belong to the application lifespan; tests
     drive it with ``run_until_idle``."""
@@ -122,15 +136,8 @@ class Dispatcher:
         await self._drain()
 
     async def start(self) -> None:
-        """Run the startup sweep, then start the loop task."""
-        try:
-            count = await run_in_threadpool(
-                self._storage.interrupt_running, self._clock(), LLM_JOB_TTL_SECONDS
-            )
-        except UNAVAILABLE_ERRORS as exc:
-            log_fault(exc, logging.WARNING, "storage unavailable")
-        else:
-            logger.info("llm_job_sweep interrupted=%d", count)
+        """Run the startup sweep, then start the loop task (even if the sweep failed)."""
+        await sweep_jobs(self._storage, self._clock)
         self._loop_task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
