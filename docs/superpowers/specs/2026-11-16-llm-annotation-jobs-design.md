@@ -112,8 +112,9 @@ candidate, and `insert_annotated` (the record as `original_json`, the candidate 
 | Unexpected exception | `failed`, result: `RequestFailure` `INTERNAL_ERROR` |
 
 `LLM_NOT_CONFIGURED` cannot occur after intake: settings load once at startup, and a restart
-with the feature disabled leaves items `pending` until it is enabled again (the dispatcher does
-not start without settings).
+with the feature disabled leaves items `pending` until it is enabled again (the lifespan runs the
+sweep alone, without the claim loop, when there is storage but no settings; such a job can be
+polled until it finishes and expires).
 
 ## Architecture
 
@@ -175,7 +176,8 @@ injected clock (`state.clock`), not `now()`, so tests control backoff and expiry
 
 ### Dispatcher
 
-- **Start:** the startup sweep marks every `running` item `interrupted` (clearing `record_json`)
+- **Start:** whenever storage is present, the startup sweep (run by the lifespan, independent of LLM
+  settings) marks every `running` item `interrupted` (clearing `record_json`)
   and finishes any job left with no open items. This assumes one service process, as the
   migrate-on-start `CMD` already does; it is recorded in `implementation-decisions.md`.
 - **Loop:** while fewer than `LLM_JOB_MAX_CONCURRENT` items are in flight, claim one:

@@ -400,8 +400,11 @@ leave open:
 - **No `LISTEN/NOTIFY`.** Polling every `LLM_JOB_POLL_SECONDS` plus an in-process wake-up after
   intake is enough for one process and keeps the database features to plain SQL
   (`FOR UPDATE SKIP LOCKED` for claiming).
-- **Start condition.** The dispatcher starts only when storage and the LLM settings are both
-  present. Route tests do not run the lifespan, so they never start it; tests drive a dispatcher
+- **Start condition.** The claim loop starts only when storage and the LLM settings are both
+  present. The startup sweep runs whenever storage is present, independent of LLM settings, so a
+  restart with the feature disabled does not leave items `running` forever; such a job's
+  `pending` items wait until the feature is enabled, and it can be polled until it finishes and
+  expires. Route tests do not run the lifespan, so they never start it; tests drive a dispatcher
   explicitly with `run_until_idle()`.
 - **Provider share.** Jobs use 2 of the 4 `LLM_MAX_CONCURRENT_RUNS` slots, so interactive
   proposals and §4.8 requests are never starved by a large job.

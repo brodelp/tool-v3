@@ -411,10 +411,11 @@ One task in the application lifespan polls the database and claims `pending` ite
 `not_before` has passed, with `FOR UPDATE SKIP LOCKED`, oldest job and lowest index first. It runs
 at most `LLM_JOB_MAX_CONCURRENT` (2) items at once, and they share the provider limit of
 `LLM_MAX_CONCURRENT_RUNS` (4), so interactive proposals and §4.8 requests always find a slot. With
-nothing claimable it waits for a wake-up or `LLM_JOB_POLL_SECONDS` (5). It starts only when storage
-and the LLM settings are both present.
+nothing claimable it waits for a wake-up or `LLM_JOB_POLL_SECONDS` (5). The claim loop starts only
+when storage and the LLM settings are both present. The startup sweep (Restart, below) needs
+storage alone: with storage but no LLM settings the lifespan runs the sweep and nothing else.
 
-- **Restart:** at startup every `running` item becomes `interrupted` and jobs left with no open
+- **Restart:** whenever storage is present, at startup every `running` item becomes `interrupted` and jobs left with no open
   item are finished; `pending` items resume, since their record is stored. Clients resubmit
   `interrupted` and `failed` records in a new job.
 - **Shutdown:** the dispatcher and its item tasks are cancelled, and each cancelled item is marked
@@ -422,8 +423,9 @@ and the LLM settings are both present.
   stopped; the next startup sweep covers whatever shutdown could not write.
 - **Storage outage:** the claimed item returns to `pending` with its attempt refunded, and the
   dispatcher waits `LLM_JOB_POLL_SECONDS` before claiming again.
-- **Disabled feature:** items stay `pending` while the feature is disabled and are processed once
-  it is enabled again.
+- **Disabled feature:** after the startup sweep, items stay `pending` while the feature is
+  disabled and are processed once it is enabled again; such a job can be polled until it finishes
+  and expires.
 - **Logging:** one line per item transition, `llm_job job=<uuid> item=<index> status=<status>
   attempts=<n> reason=<code>`, beside the existing `llm …` line per provider call (§7). Never
   `case_id`, `username`, narratives, outputs, SQL parameters, or exception messages.
@@ -531,6 +533,9 @@ internal error (`500`), since the parser cannot produce one.
 - LLM calls log provider, model, status, duration, output length in code points, annotation
   count, failure reason codes, and the prompt scope (`full` or `ae`). Never the prompt, narrative, model output, API key, base URL
   credentials, upstream response bodies, or exception messages.
+- Annotation jobs (§4.10) log one `llm_job job=<uuid> item=<index> status=<status>
+  attempts=<n> reason=<code>` line per item transition. Never `case_id`, `username`, narratives,
+  outputs, SQL parameters, or exception messages.
 - With a cloud provider, **narratives leave the service** and are processed by that provider
   under its terms. The service remains loopback-published (stage 2 §6); the outbound call is the
   only new egress. Operators choose the provider per deployment; a local `openai`-compatible
