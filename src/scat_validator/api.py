@@ -8,7 +8,6 @@ already annotated by the LLM, without a proposal to review (§4.8). A built fron
 configured, is served at ``/`` after every API route (stage 3 spec §6).
 """
 
-import asyncio
 import logging
 import os
 import time
@@ -20,11 +19,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
-from weakref import WeakKeyDictionary
 
 import anyio
 import anyio.to_thread
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import Response
@@ -34,12 +31,21 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import ClientDisconnect
 from starlette.types import Scope
 
+from scat_validator.annotation_pipeline import (
+    LlmFailure,
+    PipelineFailure,
+    annotate_and_store,
+    evaluate_candidate,
+    llm_limiter,
+    narrative_of,
+    narrative_problem,
+    run_llm,
+    single_failure,
+)
 from scat_validator.config import (
     ANNOTATION_SETS_FIELD,
-    LLM_MAX_CONCURRENT_RUNS,
     LLM_PROPOSAL_TTL_SECONDS,
     MAX_BODY_BYTES,
-    MAX_LLM_NARRATIVE_CODE_POINTS,
 )
 from scat_validator.contracts import ErrorCode, Mode, ValidationReport
 from scat_validator.diagnostics import IssueCollector, Msg
@@ -51,11 +57,9 @@ from scat_validator.http_gates import (
     media_type_supported,
     parse_query,
 )
-from scat_validator.llm.annotate import ProposedSet, annotate
 from scat_validator.llm.prompt import AE_SCOPE, FULL_SCOPE, PromptScope
-from scat_validator.llm.providers import ProviderTimeout, ProviderUnavailable, new_client
+from scat_validator.llm.providers import new_client
 from scat_validator.llm.settings import LlmSettings, load_llm_settings
-from scat_validator.llm.tags import OutputInvalid, OutputReason, contains_markup
 from scat_validator.openapi_docs import (
     accept_operation_extra,
     ae_annotated_submit_operation_extra,
@@ -82,7 +86,7 @@ from scat_validator.reporting import (
     serialize_failure,
     serialize_report,
 )
-from scat_validator.storage import UNAVAILABLE_ERRORS, Storage, StoredSubmission
+from scat_validator.storage import UNAVAILABLE_ERRORS, Storage
 from scat_validator.submissions import (
     ACCEPT_ROUTE,
     AE_ANNOTATED_SUBMISSIONS_ROUTE,
@@ -110,7 +114,6 @@ from scat_validator.submissions import (
 )
 from scat_validator.updates import (
     annotations_text,
-    candidate_size_issues,
     check_update_shape,
     has_set,
     if_match_version,
@@ -439,33 +442,6 @@ def parse_update_body(body: bytes) -> str | Outcome:
     return annotations_text(document.document_bytes.decode("utf-8"))
 
 
-type FailureOf = Callable[[ErrorCode, IssueCollector | None], Outcome]
-
-
-def single_failure(code: ErrorCode, issues: IssueCollector | None = None) -> Outcome:
-    """A ``RequestFailure`` of a route that takes one record as its body."""
-    return serialize_failure(request_failure("single", code, issues))
-
-
-def evaluate_candidate(
-    record_text: str,
-    candidate_of: Callable[[str], str],
-    size_path: str = "annotations",
-    fail: FailureOf = submission_failure,
-) -> Outcome | tuple[ValidationReport, str]:
-    """Steps 8-9: build the candidate from the stored record, then validate it as one record.
-
-    An oversized candidate is reported at ``/<size_path>``.
-    """
-    candidate = candidate_of(record_text)
-    size_issues = candidate_size_issues(candidate, size_path)
-    if size_issues is not None:
-        return fail("INVALID_DOCUMENT", size_issues)
-    # A stored record with a decoded map spliced in is valid JSON within the depth limit.
-    document = decode_document(candidate.encode("utf-8"))
-    return build_report("single", [(document.value, PathNode.root())]), candidate
-
-
 async def _update(request: Request) -> Outcome:
     body = await _read_body(request, submission_failure)
     if isinstance(body, Outcome):
@@ -572,16 +548,6 @@ async def delete_submission(request: Request) -> Response:
 # ---------------------------------------------------------------- stage 4: LLM annotation
 
 
-OUTPUT_MESSAGES: Final[dict[OutputReason, str]] = {
-    "OUTPUT_TRUNCATED": Msg.OUTPUT_TRUNCATED,
-    "MODEL_REFUSED": Msg.MODEL_REFUSED,
-    "UNBALANCED_TAG": Msg.UNBALANCED_TAG,
-    "NESTED_TAG": Msg.NESTED_TAG,
-    "EMPTY_TAG": Msg.EMPTY_TAG,
-    "NARRATIVE_ALTERED": Msg.NARRATIVE_ALTERED,
-}
-
-
 async def _require_empty_body(request: Request) -> Outcome | None:
     """Routes without a body reject any: a declared length, or a first streamed byte."""
     if declared_length_nonzero(request.headers.getlist("content-length")):
@@ -591,124 +557,9 @@ async def _require_empty_body(request: Request) -> Outcome | None:
     return None
 
 
-def _log_llm(
-    provider: str,
-    model: str,
-    status: int,
-    duration: float,
-    output_code_points: int | None,
-    annotation_count: int | None,
-    reason: str | None,
-    upstream_status: int | None,
-    scope: str,
-) -> None:
-    # Configuration and counts only: never the prompt, narrative, output, key, or base URL.
-    logger.info(
-        "llm provider=%s model=%s status=%d duration_ms=%.1f output_code_points=%s "
-        "annotations=%s reason=%s upstream_status=%s scope=%s",
-        provider,
-        model,
-        status,
-        duration * 1000,
-        "-" if output_code_points is None else output_code_points,
-        "-" if annotation_count is None else annotation_count,
-        "-" if reason is None else reason,
-        "-" if upstream_status is None else upstream_status,
-        scope,
-    )
-
-
-def _run_llm(
-    settings: LlmSettings,
-    narrative: str,
-    client: httpx.Client | None,
-    clock: Callable[[], datetime],
-    fail: FailureOf = submission_failure,
-    scope: PromptScope = FULL_SCOPE,
-) -> ProposedSet | Outcome:
-    """Steps 7-9 of stage 4 §4.3: one provider call and its parsed set. Runs in a worker."""
-    started = time.perf_counter()
-
-    def log(
-        status: int,
-        output: int | None,
-        count: int | None,
-        reason: str | None,
-        upstream: int | None = None,
-    ) -> None:
-        elapsed = time.perf_counter() - started
-        _log_llm(
-            settings.provider,
-            settings.model,
-            status,
-            elapsed,
-            output,
-            count,
-            reason,
-            upstream,
-            scope.name,
-        )
-
-    try:
-        if client is None:
-            with new_client() as own_client:
-                proposed = annotate(settings, narrative, own_client, clock, scope)
-        else:
-            proposed = annotate(settings, narrative, client, clock, scope)
-    except ProviderTimeout:
-        log(504, None, None, "LLM_TIMEOUT")
-        return fail("LLM_TIMEOUT", None)
-    except ProviderUnavailable as unavailable:
-        log(502, None, None, "LLM_UNAVAILABLE", unavailable.upstream_status)
-        return fail("LLM_UNAVAILABLE", None)
-    except OutputInvalid as invalid:
-        log(502, invalid.output_code_points, None, invalid.reason)
-        issues = IssueCollector()
-        issues.add("llm_output", PathNode.root(), invalid.reason, OUTPUT_MESSAGES[invalid.reason])
-        return fail("LLM_OUTPUT_INVALID", issues)
-    except Exception:
-        log(500, None, None, None)
-        raise
-    log(201, proposed.output_code_points, proposed.annotation_count, None)
-    return proposed
-
-
-_LLM_LIMITERS: Final[WeakKeyDictionary[asyncio.AbstractEventLoop, anyio.CapacityLimiter]] = (
-    WeakKeyDictionary()
-)
-
-
-def _llm_limiter() -> anyio.CapacityLimiter:
-    """The running loop's limiter for provider calls (LLM_MAX_CONCURRENT_RUNS at once; the rest
-    wait). One per event loop, created lazily, because a limiter binds to its loop."""
-    loop = asyncio.get_running_loop()
-    limiter = _LLM_LIMITERS.get(loop)
-    if limiter is None:
-        limiter = _LLM_LIMITERS[loop] = anyio.CapacityLimiter(LLM_MAX_CONCURRENT_RUNS)
-    return limiter
-
-
-def _narrative(record_text: str) -> str:
-    """The narrative of a valid record, losslessly decoded."""
-    record = decode_document(record_text.encode("utf-8")).value
-    assert isinstance(record, dict)
-    narrative = record["narrative"]
-    assert isinstance(narrative, str)
-    return narrative
-
-
 def _narrative_and_presence(record_text: str, set_id: str) -> tuple[str, bool]:
     """The stored narrative and whether the record has set ``set_id``."""
-    return _narrative(record_text), has_set(record_text, set_id)
-
-
-def _narrative_problem(narrative: str) -> ErrorCode | None:
-    """Steps 5-6 of stage 4 §4.3: narratives the LLM is not run on."""
-    if len(narrative) > MAX_LLM_NARRATIVE_CODE_POINTS:
-        return "NARRATIVE_TOO_LONG"
-    if contains_markup(narrative):
-        return "NARRATIVE_HAS_MARKUP"
-    return None
+    return narrative_of(record_text), has_set(record_text, set_id)
 
 
 async def _propose(request: Request) -> Outcome:
@@ -732,19 +583,19 @@ async def _propose(request: Request) -> Outcome:
         narrative, replaces = await run_in_threadpool(
             _narrative_and_presence, stored.source_json, settings.set_id
         )
-        problem = _narrative_problem(narrative)
+        problem = narrative_problem(narrative)
         if problem is not None:
             return submission_failure(problem)
         proposed = await anyio.to_thread.run_sync(
-            _run_llm,
+            run_llm,
             settings,
             narrative,
             state.llm_client,
             state.clock,
-            limiter=_llm_limiter(),
+            limiter=llm_limiter(),
         )
-        if isinstance(proposed, Outcome):
-            return proposed
+        if isinstance(proposed, LlmFailure):
+            return proposed.outcome(submission_failure)
         saved = await run_in_threadpool(
             storage.insert_proposal,
             identity.case_id,
@@ -904,8 +755,8 @@ async def _submit_annotated(request: Request, scope: PromptScope) -> Outcome:
     if settings is None:
         return single_failure("LLM_NOT_CONFIGURED")
     source_json = evaluation.document_bytes.decode("utf-8")
-    narrative = await run_in_threadpool(_narrative, source_json)
-    problem = _narrative_problem(narrative)
+    narrative = await run_in_threadpool(narrative_of, source_json)
+    problem = narrative_problem(narrative)
     if problem is not None:
         return single_failure(problem)
     storage = _storage(request)
@@ -915,45 +766,22 @@ async def _submit_annotated(request: Request, scope: PromptScope) -> Outcome:
     case_id, username = observation["case_id"], observation["username"]
     assert case_id is not None and username is not None  # a valid record observes both
     try:
-        # Checked before the provider call so a repeat does not spend one; the insert decides.
-        if await run_in_threadpool(storage.fetch, case_id, username) is not None:
-            return single_failure("ALREADY_SUBMITTED")
-        proposed = await anyio.to_thread.run_sync(
-            _run_llm,
+        result = await annotate_and_store(
+            storage,
             settings,
-            narrative,
             state.llm_client,
             state.clock,
-            single_failure,
             scope,
-            limiter=_llm_limiter(),
-        )
-        if isinstance(proposed, Outcome):
-            return proposed
-        set_id, set_json = proposed.set_id, proposed.set_json
-        annotated = await run_in_threadpool(
-            evaluate_candidate,
             source_json,
-            lambda text: with_set(text, set_id, set_json),
-            ANNOTATION_SETS_FIELD,
-            single_failure,
-        )
-        if isinstance(annotated, Outcome):
-            return annotated
-        report, candidate = annotated
-        if not report["valid"]:
-            return serialize_report(report, None)
-        saved = await run_in_threadpool(
-            storage.insert_annotated, case_id, username, source_json, candidate
+            case_id,
+            username,
         )
     except UNAVAILABLE_ERRORS as exc:
         _log_fault(exc, logging.WARNING, "storage unavailable")
         return single_failure("STORAGE_UNAVAILABLE")
-    if saved is None:  # submitted by another request while the provider ran
-        return single_failure("ALREADY_SUBMITTED")
-    stored = StoredSubmission(
-        case_id, username, candidate, saved.submitted_at, saved.updated_at, saved.version
-    )
+    if isinstance(result, PipelineFailure):
+        return result.outcome
+    stored = result
     return serialize_annotated_submission(stored)
 
 
