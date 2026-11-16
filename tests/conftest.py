@@ -75,7 +75,7 @@ def _session_storage(database_url: str) -> Iterator[Storage]:
 def storage(_session_storage: Storage) -> Iterator[Storage]:
     """Empty submission storage installed in the app for one test."""
     with _session_storage.engine.begin() as connection:
-        connection.execute(text("TRUNCATE submissions CASCADE"))
+        connection.execute(text("TRUNCATE submissions, annotation_jobs CASCADE"))
     app.state.storage = _session_storage
     yield _session_storage
     app.state.storage = None

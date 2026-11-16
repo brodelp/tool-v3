@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 from alembic import command
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
 from scat_validator.storage import DATABASE_URL_VARIABLE, sqlalchemy_url
@@ -166,3 +166,18 @@ def test_0003_ignores_nested_decoys_and_decodes_escaped_names(legacy_engine: Eng
     after = rows(legacy_engine)
     assert after["10-1"] == before["10-1"]
     assert after["10-2"] == (ESCAPED_MIGRATED, *before["10-2"][1:])
+
+
+def test_0005_round_trip(database_url: str) -> None:
+    config = alembic_config(database_url)
+    engine = create_engine(sqlalchemy_url(database_url))
+    jobs = {"annotation_jobs", "annotation_job_items"}
+    try:
+        command.downgrade(config, "0004")
+        assert not jobs & set(inspect(engine).get_table_names())
+        command.upgrade(config, "head")
+        assert jobs <= set(inspect(engine).get_table_names())
+        command.check(config)
+    finally:
+        engine.dispose()
+        command.upgrade(config, "head")  # the session database stays at head for later tests

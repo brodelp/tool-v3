@@ -87,6 +87,13 @@ LLM_MAX_OUTPUT_TOKENS: Final = 32_000
 LLM_PROPOSAL_TTL_SECONDS: Final = 3600
 # Provider calls running at once; further runs wait for a slot (cancel does not stop a call).
 LLM_MAX_CONCURRENT_RUNS: Final = 4
+# Annotation jobs (stage 4 spec §4.10).
+LLM_JOB_MAX_CONCURRENT: Final = 2
+LLM_JOB_MAX_ATTEMPTS: Final = 3
+LLM_JOB_BACKOFF_SECONDS: Final = (30, 120)
+LLM_JOB_POLL_SECONDS: Final = 5
+LLM_JOB_TTL_SECONDS: Final = 86_400
+JOB_STATUSES: Final = ("pending", "running", "succeeded", "failed", "rejected", "interrupted")
 ANTHROPIC_API_VERSION: Final = "2026-10-21"
 # Markup tag in the model output -> label (spec §5.3).
 LLM_TAGS: Final[dict[str, str]] = {

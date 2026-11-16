@@ -12,6 +12,7 @@ from typing import Annotated, Any, Final, Literal, NotRequired, TypedDict, get_a
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from scat_validator.config import (
+    JOB_STATUSES,
     LABELS,
     LLM_SET_PREFIX,
     MAX_ANNOTATION_SETS,
@@ -144,6 +145,8 @@ _GENERATED_AT: Final = re.compile(GENERATED_AT_PATTERN)
 
 SetKind = Literal["user", "llm"]
 assert get_args(SetKind) == SET_KINDS
+JobStatus = Literal["pending", "running", "succeeded", "failed", "rejected", "interrupted"]
+assert get_args(JobStatus) == JOB_STATUSES
 
 
 def is_valid_set_id(value: str) -> bool:
