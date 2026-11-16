@@ -35,9 +35,9 @@ Stage 4 currently defers "batch or background LLM runs" (§1) and "background jo
 ### `POST /api/v1/annotation-jobs` and `POST /api/v1/annotation-jobs/ae`
 
 The body is a stage 1 `batch` document (`{"records": [...]}`, `MIN_BATCH_RECORDS`–
-`MAX_BATCH_RECORDS` records, `MAX_BODY_BYTES`), under the gates of `POST /api/v1/validate/batch`.
+`MAX_BATCH_RECORDS` records, `MAX_BODY_BYTES`), under the gates of `POST /api/v1/validate-batch`; batch-level failures are `RequestFailure`s in `batch` mode.
 The `ae` route uses the `ae` prompt scope and label filter of §4.9; the scope is stored on the
-job. No query parameters.
+job. No query parameters (the query string is parsed as §4.8 does, `echo_allowed=False`).
 
 | Step | Failure | Result |
 | --- | --- | --- |
@@ -53,7 +53,7 @@ job. No query parameters.
 
 Each record is the exact text of its element of `records`, split losslessly from the upload; it
 is validated as a `single` document so its `rejected` result is exactly what §4.8 would have
-returned for it. Foreign members of the batch document beside `records` are ignored.
+returned for it. Unknown members of the batch document beside `records` fail step 1, as stage 1 §3.4 requires.
 
 A job is created even when every item is rejected. Success is `202 Accepted`, `Location:
 /api/v1/annotation-jobs/{job_id}`, `Cache-Control: no-store`, and the `AnnotationJob` body below.
@@ -138,11 +138,12 @@ lifespan ──▶ jobs.Dispatcher ──claim──▶ storage.claim_item (SKIP
 | `splice.py` | `array_elements(text, start)`: exact element spans of a JSON array, so each record keeps its bytes. | — |
 | `contracts.py`, `openapi_docs.py` | `AnnotationJob`, `AnnotationJobItem`; `JOB_NOT_FOUND`; the two POST operations and the GET. | config |
 | `submissions.py` | `parse_job_id`; `serialize_job`. | contracts |
-| `llm/pipeline.py` (new) | `annotate_and_store(storage, settings, client, clock, scope, record_json, case_id, username, limiter)`: §4.8 steps 11–14, returning the stored submission or a failure `Outcome`. `_submit_annotated` and the dispatcher both call it, so route and job store identical bytes. `_run_llm`, `_llm_limiter`, and `_narrative_problem` move here from `api.py`. | llm, splice, validation, storage |
+| `annotation_pipeline.py` (new) | `annotate_and_store(storage, settings, client, clock, scope, record_json, case_id, username, limiter)`: §4.8 steps 11–14, returning the stored submission or a failure `Outcome`. `_submit_annotated` and the dispatcher both call it, so route and job store identical bytes. `_run_llm`, `_llm_limiter`, and `_narrative_problem` move here from `api.py`. It lives outside the `llm` package, which never imports storage. | llm, splice, validation, storage |
+| `documents.py` (new) | `Evaluation` and `evaluate_document`, moved from `api.py` so job intake can validate records without importing `api`. | validation |
 | `jobs.py` (new) | `Dispatcher`: startup sweep, claim loop with at most `LLM_JOB_MAX_CONCURRENT` items in flight, outcome classification and retry scheduling, `wake()` (an `asyncio.Event`), `run_until_idle()` for tests, and cancellation on shutdown. No HTTP knowledge. | pipeline, storage, config |
 | `storage.py` | Tables `annotation_jobs` and `annotation_job_items`; `insert_job` (lazily deleting expired jobs), `fetch_job`, `claim_item`, `reschedule_item`, `finish_item` (sets the job's `finished_at`/`expires_at` in the same transaction when it was the last open item), `interrupt_running`. | sqlalchemy |
 | `migrations/versions/0005_annotation_jobs.py` | Creates both tables; downgrade drops them. | — |
-| `api.py` | The three routes; intake; lifespan starts the dispatcher when storage and LLM settings are present, unless the caller set `state.run_jobs = False` (tests), and stops it on exit. | jobs, pipeline |
+| `api.py` | The three routes; intake; lifespan starts the dispatcher when storage and LLM settings are present, and stops it on exit (route tests do not run the lifespan, so they never start it). | jobs, pipeline, documents |
 
 ### Data model (migration `0005`)
 
@@ -244,7 +245,7 @@ Each commit leaves `make check` green.
 
 1. `docs: specify annotation jobs (stage 4 §4.10, L17–L20)`: spec §4.10, §3 table, §1 and §9
    deferrals, §8 rows, `implementation-decisions.md`.
-2. `refactor(llm): extract the annotate-and-store pipeline` (`llm/pipeline.py`; §4.8/§4.9
+2. `refactor(llm): extract the annotate-and-store pipeline` (`annotation_pipeline.py`; §4.8/§4.9
    unchanged).
 3. `feat(splice): split array elements losslessly`
 4. `feat(storage): store annotation jobs` (migration 0005, storage methods).

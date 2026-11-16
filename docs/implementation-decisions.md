@@ -387,3 +387,37 @@ Choices the stage 4 spec and design leave open:
   metadata, so a reader can tell an AE-only set from a full run that found only AEs. The cost is
   that the two scopes from one model replace each other. The route has no frontend use, like
   §4.8.
+
+### Annotation jobs
+
+Choices the design (`docs/superpowers/specs/2026-11-16-llm-annotation-jobs-design.md`) and §4.10
+leave open:
+
+- **In-process dispatcher.** One task in the app lifespan polls the database; there is no worker
+  service. Its startup sweep (every `running` item becomes `interrupted`) assumes a single service
+  process, as the migrate-on-start `CMD` already does: a second process starting would interrupt
+  the first one's items. Running several replicas needs a lease or heartbeat first.
+- **No `LISTEN/NOTIFY`.** Polling every `LLM_JOB_POLL_SECONDS` plus an in-process wake-up after
+  intake is enough for one process and keeps the database features to plain SQL
+  (`FOR UPDATE SKIP LOCKED` for claiming).
+- **Start condition.** The dispatcher starts only when storage and the LLM settings are both
+  present. Route tests do not run the lifespan, so they never start it; tests drive a dispatcher
+  explicitly with `run_until_idle()`.
+- **Provider share.** Jobs use 2 of the 4 `LLM_MAX_CONCURRENT_RUNS` slots, so interactive
+  proposals and §4.8 requests are never starved by a large job.
+- **Retry policy.** Timeouts, unavailability, and `LLM_OUTPUT_INVALID` are retried up to 3
+  attempts with 30 s and 120 s backoff, the retry going back to `pending` with a later
+  `not_before` rather than sleeping on a slot. `OUTPUT_TRUNCATED` is terminal: the same narrative
+  would be truncated again. A storage outage refunds the attempt, because the provider was not at
+  fault.
+- **Privacy of queued records.** `record_json` holds the exact record text only while an item can
+  still run; it is cleared on every terminal or `interrupted` state, and jobs expire a day after
+  they finish.
+- **Injected clock.** Every job timestamp and every comparison against one (`not_before`,
+  `expires_at`) uses `app.state.clock` and is passed to storage as a parameter, never `now()` in
+  SQL, so tests control backoff and expiry without sleeping.
+- **Batch failures.** Batch-level failures on the job POST routes are `RequestFailure`s in `batch`
+  mode, as for `POST /api/v1/validate-batch`; per-record failures are stored as item results.
+- **Pipeline module.** The shared annotate-and-store pipeline lives in
+  `src/scat_validator/annotation_pipeline.py`, not under `llm/`, because the `llm` package never
+  imports storage.
