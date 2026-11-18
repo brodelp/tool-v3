@@ -134,12 +134,14 @@ def _log_llm(
     scope: str,
     alteration: Alteration | None,
     first_difference: int | None,
+    repaired: Alteration | None,
 ) -> None:
     # Configuration, counts, and offsets only: never the prompt, narrative, output, key, or base
     # URL.
     logger.info(
         "llm provider=%s model=%s status=%d duration_ms=%.1f output_code_points=%s "
-        "annotations=%s reason=%s upstream_status=%s scope=%s alteration=%s first_difference=%s",
+        "annotations=%s reason=%s upstream_status=%s scope=%s alteration=%s first_difference=%s "
+        "repaired=%s",
         provider,
         model,
         status,
@@ -151,6 +153,7 @@ def _log_llm(
         scope,
         "-" if alteration is None else alteration,
         "-" if first_difference is None else first_difference,
+        "-" if repaired is None else repaired,
     )
 
 
@@ -171,6 +174,7 @@ def run_llm(
         reason: str | None,
         upstream: int | None = None,
         invalid: OutputInvalid | None = None,
+        repaired: Alteration | None = None,
     ) -> None:
         elapsed = time.perf_counter() - started
         _log_llm(
@@ -185,6 +189,7 @@ def run_llm(
             scope.name,
             None if invalid is None else invalid.alteration,
             None if invalid is None else invalid.first_difference,
+            repaired,
         )
 
     try:
@@ -207,7 +212,13 @@ def run_llm(
     except Exception:
         log(500, None, None, None)
         raise
-    log(201, proposed.output_code_points, proposed.annotation_count, None)
+    log(
+        201,
+        proposed.output_code_points,
+        proposed.annotation_count,
+        None,
+        repaired=proposed.repaired,
+    )
     return proposed
 
 

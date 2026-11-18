@@ -234,4 +234,20 @@ def test_logs_contain_no_values(
     assert "scope=full" in caplog.text
     assert f"POST {ROUTE} status=201" in caplog.text
     assert "reason=NARRATIVE_ALTERED" in caplog.text
-    assert "alteration=TEXT_CHANGED first_difference=6" in caplog.text
+    assert "alteration=TEXT_CHANGED first_difference=6 repaired=-" in caplog.text
+
+
+def test_repaired_output_is_stored_and_logged(
+    storage: Storage, llm: Install, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO)
+    record = make_record(narrative="Aspirin\u00a0caused nausea.", annotation_sets=MISSING)
+    llm("<SDRUG>Aspirin</SDRUG> caused <AE>nausea</AE>.")
+    assert submit_annotated(dumps(record)).status == 201
+    row = stored_row(storage)
+    assert row is not None
+    assert '"output_repair":"WHITESPACE","annotations":{' in row[1]
+    assert '{"text":"nausea","start":15,"end":21}' in row[1]
+    assert "status=201" in caplog.text
+    assert "repaired=WHITESPACE" in caplog.text
+    assert "caused" not in caplog.text

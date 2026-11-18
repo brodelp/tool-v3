@@ -76,45 +76,54 @@ a prompt or chunking change instead.
 @pytest.mark.parametrize(
     ("output", "narrative", "expected"),
     [
-        ("a <AE>b</AE>", "a  b", (3, 4)),                       # collapsed spaces
-        ("a <AE>b</AE>", "a b", (2, 3)),                   # NBSP
-        ("a <AE>b</AE>\n", "a b", (2, 3)),                      # trailing newline
-        ("<AE>a</AE> b", "  a b", (2, 3)),                      # leading narrative ws
-        ("a\n<AE>b</AE>", "a\r\nb", (3, 4)),                    # CRLF
-        ("a <AE>rash</AE>", "a ra​sh", (2, 7)),            # zero-width space
+        ("a <AE>b</AE>", "a  b", (3, 4)),  # collapsed spaces
+        ("a <AE>b</AE>", "a b", (2, 3)),  # NBSP
+        ("a <AE>b</AE>\n", "a b", (2, 3)),  # trailing newline
+        ("<AE>a</AE> b", "  a b", (2, 3)),  # leading narrative ws
+        ("a\n<AE>b</AE>", "a\r\nb", (3, 4)),  # CRLF
+        ("a <AE>rash</AE>", "a ra​sh", (2, 7)),  # zero-width space
         ("<AE>hepatotoxicity</AE>", "hepato­toxicity", (0, 15)),  # soft hyphen
-        ("<AE>a</AE>b", "a\x07b", (0, 1)),                      # control char
-        ("A &amp; <AE>B</AE>", "A & B", (4, 5)),                # entity in output
-        ("A & <AE>B</AE>", "A &amp; B", (8, 9)),                # entity in narrative
-        ('"x" <AE>b</AE>', "“x” b", (4, 5)),          # typographic quotes
-        ("<AE>a...</AE> b", "a… b", (0, 2)),               # ellipsis
-        ("<AE>Café</AE>", "Café", (0, 4)),           # decomposed vs composed
+        ("<AE>a</AE>b", "a\x07b", (0, 1)),  # control char
+        ("A &amp; <AE>B</AE>", "A & B", (4, 5)),  # entity in output
+        ("A & <AE>B</AE>", "A &amp; B", (8, 9)),  # entity in narrative
+        ('"x" <AE>b</AE>', "“x” b", (4, 5)),  # typographic quotes
+        ("<AE>a...</AE> b", "a… b", (0, 2)),  # ellipsis
+        ("<AE>Café</AE>", "Café", (0, 4)),  # decomposed vs composed
     ],
 )
-def test_repairs(output, narrative, expected): ...
+def test_repairs(output, narrative, expected):
+    ...
     # strip tags with parse_tagged's tag regex, or build stripped + spans by hand;
     # assert repair_spans(stripped, narrative, {"AE": [span]}) == {"AE": [expected]}
+
 
 def test_boundary_inside_whitespace_snaps():
     assert repair_spans("a  b", "a b", {"AE": [(2, 4)]}) == {"AE": [(2, 3)]}
 
+
 def test_mixed_rules_repair():
     assert repair_spans("a rash.", "a ra​sh.", {"AE": [(2, 6)]}) == {"AE": [(2, 7)]}
+
 
 def test_empty_after_mapping_is_not_repaired():
     assert repair_spans("a ​b", "a b", {"AE": [(2, 3)]}) is None
 
+
 def test_split_character_is_not_repaired():
     assert repair_spans("fi", "ﬁ", {"AE": [(0, 1)], "Dx": [(1, 2)]}) is None
 
-@pytest.mark.parametrize(("stripped", "narrative"), [
-    ("rash.", "rash. Then more."),   # visible text omitted
-    ("Patient rash", "Pt rash"),     # text added
-    ("the rash", "a rash"),          # reworded
-    ("Here:\na b", "a b"),           # wrapper text
-    ("10mg", "10 mg"),               # whitespace deleted between tokens
-    ("<ae>x", "x"),                  # unknown tag left in text
-])
+
+@pytest.mark.parametrize(
+    ("stripped", "narrative"),
+    [
+        ("rash.", "rash. Then more."),  # visible text omitted
+        ("Patient rash", "Pt rash"),  # text added
+        ("the rash", "a rash"),  # reworded
+        ("Here:\na b", "a b"),  # wrapper text
+        ("10mg", "10 mg"),  # whitespace deleted between tokens
+        ("<ae>x", "x"),  # unknown tag left in text
+    ],
+)
 def test_not_repairable(stripped, narrative):
     assert repair_spans(stripped, narrative, {}) is None
 ```

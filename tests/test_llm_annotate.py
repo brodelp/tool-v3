@@ -33,6 +33,20 @@ def test_annotate_builds_set_json() -> None:
     )
 
 
+def test_repaired_output_is_accepted() -> None:
+    p = annotate(S, "a\u00a0b", client("a <AE>b</AE>"), lambda: NOW)
+    assert p.repaired == "WHITESPACE"
+    assert p.set_json.endswith(
+        '"output_repair":"WHITESPACE","annotations":{"AE":[{"text":"b","start":2,"end":3}]}}'
+    )
+
+
+def test_exact_output_is_not_repaired() -> None:
+    p = annotate(S, "a b", client("a <AE>b</AE>"), lambda: NOW)
+    assert p.repaired is None
+    assert "output_repair" not in p.set_json
+
+
 def test_generated_at_converted_to_utc_with_six_digits() -> None:
     now = datetime(2026, 10, 29, 14, 0, 0, tzinfo=timezone(timedelta(hours=2)))
     p = annotate(S, "a", client("a"), lambda: now)

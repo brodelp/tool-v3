@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import httpx
 
+from ..contracts import Alteration
 from ..diagnostics import InventoryCollector, IssueCollector
 from ..paths import PathNode
 from ..validation import validate_record
@@ -24,6 +25,7 @@ class ProposedSet:
     annotation_count: int
     annotations_by_label: dict[str, int]
     output_code_points: int
+    repaired: Alteration | None  # the kind of change the normalization rules undid
 
 
 def _dumps(value: object) -> str:
@@ -43,10 +45,11 @@ def annotate(
             raise OutputInvalid("OUTPUT_TRUNCATED")
         if completion.stop == "refused":
             raise OutputInvalid("MODEL_REFUSED")
-        spans = parse_tagged(completion.text, narrative).spans
+        parsed = parse_tagged(completion.text, narrative)
     except OutputInvalid as invalid:
         invalid.output_code_points = len(completion.text)
         raise
+    spans = parsed.spans
     if scope.labels is not None:  # tags outside the scope passed the narrative check; drop them
         spans = {label: v for label, v in spans.items() if label in scope.labels}
     generated_at = now().astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -58,6 +61,8 @@ def annotate(
     }
     if scope.labels is not None:  # foreign set metadata (spec §2.2): what the run looked for
         annotation_set["label_scope"] = list(scope.labels)
+    if parsed.repaired is not None:  # foreign set metadata: the output needed a repair (§5.3)
+        annotation_set["output_repair"] = parsed.repaired
     annotation_set["annotations"] = {
         label: [{"text": narrative[s:e], "start": s, "end": e} for s, e in items]
         for label, items in spans.items()
@@ -70,6 +75,7 @@ def annotate(
         annotation_count=sum(len(v) for v in spans.values()),
         annotations_by_label={label: len(v) for label, v in spans.items()},
         output_code_points=len(completion.text),
+        repaired=parsed.repaired,
     )
 
 

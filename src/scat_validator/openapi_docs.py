@@ -883,7 +883,10 @@ Order: body (413); identity parameters (422 `INVALID_PARAMETERS`); configuration
 markup such as `<AE>` (422 `NARRATIVE_HAS_MARKUP`); provider timeout (504 `LLM_TIMEOUT`); provider
 connection failure, non-2xx, or malformed response (502 `LLM_UNAVAILABLE`); unusable output (502
 `LLM_OUTPUT_INVALID` with one issue at `location` `llm_output` naming the reason); store (503).
-Nothing from the output is returned on failure. {_EMPTY_BODY_NOTE}
+Nothing from the output is returned on failure. Output that differs from the narrative only in
+line endings, whitespace, character references, typographic characters, or invisible characters
+is repaired: its spans are mapped onto the narrative and the set records the kind of change as
+the foreign property `output_repair` (an `alteration` value). {_EMPTY_BODY_NOTE}
 {_LOOKUP_DESCRIPTION}"""
 
 _ACCEPT_DESCRIPTION: Final = f"""
