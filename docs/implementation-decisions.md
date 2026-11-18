@@ -387,6 +387,17 @@ Choices the stage 4 spec and design leave open:
   metadata, so a reader can tell an AE-only set from a full run that found only AEs. The cost is
   that the two scopes from one model replace each other. The route has no frontend use, like
   §4.8.
+- **Classifying altered narratives (§5.3).** The model output is never kept, so a
+  `NARRATIVE_ALTERED` failure used to say nothing about what changed. The classifier reports one
+  kind and an offset, never text, so both can be returned and logged under §7. Each kind is a
+  single normalization applied to both texts; the first that makes them equal wins, and a mix of
+  changes is `TEXT_CHANGED` rather than a list, which keeps the field one value. Unknown tags come
+  first because an invented tag also looks like added text; wrapper text comes before whitespace
+  because a trailing newline also collapses away. A no-break space is `WHITESPACE` (Python's `\s`
+  matches it). `TEXT_OMITTED` and `TEXT_ADDED` are subsequence tests, so "Pt" expanded to
+  "Patient" is `TEXT_ADDED`. The fields extend `Issue` as optional members, like
+  `path_truncated`, so the fixed message and the reason code stay as they were. The kind type is
+  in `contracts.py` with the other wire literals.
 
 ### Annotation jobs
 

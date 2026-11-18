@@ -839,12 +839,15 @@ def _issue(location: str, path: str, code: str, message: str) -> dict[str, Any]:
     return {"location": location, "path": path, "code": code, "message": message}
 
 
+def _altered_issue() -> dict[str, Any]:
+    issue = _issue("llm_output", "", "NARRATIVE_ALTERED", Msg.NARRATIVE_ALTERED)
+    return issue | {"alteration": "TEXT_CHANGED", "first_difference": 21}
+
+
 EXAMPLE_LLM_NOT_CONFIGURED: Final = _code_failure("LLM_NOT_CONFIGURED")
 EXAMPLE_LLM_TIMEOUT: Final = _code_failure("LLM_TIMEOUT")
 EXAMPLE_LLM_UNAVAILABLE: Final = _code_failure("LLM_UNAVAILABLE")
-EXAMPLE_NARRATIVE_ALTERED: Final = _code_failure(
-    "LLM_OUTPUT_INVALID", [_issue("llm_output", "", "NARRATIVE_ALTERED", Msg.NARRATIVE_ALTERED)]
-)
+EXAMPLE_NARRATIVE_ALTERED: Final = _code_failure("LLM_OUTPUT_INVALID", [_altered_issue()])
 EXAMPLE_NARRATIVE_HAS_MARKUP: Final = _code_failure("NARRATIVE_HAS_MARKUP")
 EXAMPLE_PROPOSAL_NOT_FOUND: Final = _code_failure("PROPOSAL_NOT_FOUND")
 EXAMPLE_SET_NOT_FOUND: Final = _code_failure("SET_NOT_FOUND")
@@ -1001,7 +1004,8 @@ def proposal_operation_extra() -> dict[str, Any]:
                     "502": (
                         "`LLM_UNAVAILABLE`, or `LLM_OUTPUT_INVALID` with one issue at "
                         "`llm_output`: `OUTPUT_TRUNCATED`, `MODEL_REFUSED`, `UNBALANCED_TAG`, "
-                        "`NESTED_TAG`, `EMPTY_TAG`, or `NARRATIVE_ALTERED`.",
+                        "`NESTED_TAG`, `EMPTY_TAG`, or `NARRATIVE_ALTERED` (with `alteration` and "
+                        "`first_difference`).",
                         {
                             "provider_unavailable": EXAMPLE_LLM_UNAVAILABLE,
                             "narrative_altered": EXAMPLE_NARRATIVE_ALTERED,
@@ -1102,13 +1106,13 @@ def annotated_submit_operation_extra(
     responses["502"] = _response(
         "`LLM_UNAVAILABLE`, or `LLM_OUTPUT_INVALID` with one issue at `llm_output`: "
         "`OUTPUT_TRUNCATED`, `MODEL_REFUSED`, `UNBALANCED_TAG`, `NESTED_TAG`, `EMPTY_TAG`, or "
-        "`NARRATIVE_ALTERED`.",
+        "`NARRATIVE_ALTERED` (with `alteration` and `first_difference`).",
         failure,
         {
             "provider_unavailable": _single_failure_example("LLM_UNAVAILABLE"),
             "narrative_altered": _single_failure_example(
                 "LLM_OUTPUT_INVALID",
-                [_issue("llm_output", "", "NARRATIVE_ALTERED", Msg.NARRATIVE_ALTERED)],
+                [_altered_issue()],
             ),
         },
     )

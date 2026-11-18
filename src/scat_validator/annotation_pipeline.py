@@ -24,7 +24,7 @@ from scat_validator.config import (
     LLM_MAX_CONCURRENT_RUNS,
     MAX_LLM_NARRATIVE_CODE_POINTS,
 )
-from scat_validator.contracts import ErrorCode, ValidationReport
+from scat_validator.contracts import Alteration, ErrorCode, ValidationReport
 from scat_validator.diagnostics import IssueCollector, Msg
 from scat_validator.llm.annotate import ProposedSet, annotate
 from scat_validator.llm.prompt import FULL_SCOPE, PromptScope
@@ -85,16 +85,23 @@ OUTPUT_MESSAGES: Final[dict[OutputReason, str]] = {
 
 @dataclass(frozen=True, slots=True)
 class LlmFailure:
-    """A provider call that produced no set: its error code and, for bad output, the reason."""
+    """A provider call that produced no set: its error code and, for bad output, the reason
+    (with, for an altered narrative, the kind of change and where it starts)."""
 
     code: ErrorCode
     reason: OutputReason | None
+    alteration: Alteration | None = None
+    first_difference: int | None = None
 
     def outcome(self, fail: FailureOf) -> Outcome:
         if self.reason is None:
             return fail(self.code, None)
         issues = IssueCollector()
         issues.add("llm_output", PathNode.root(), self.reason, OUTPUT_MESSAGES[self.reason])
+        if self.alteration is not None and self.first_difference is not None:
+            (issue,) = issues.items
+            issue["alteration"] = self.alteration
+            issue["first_difference"] = self.first_difference
         return fail(self.code, issues)
 
 
@@ -125,11 +132,14 @@ def _log_llm(
     reason: str | None,
     upstream_status: int | None,
     scope: str,
+    alteration: Alteration | None,
+    first_difference: int | None,
 ) -> None:
-    # Configuration and counts only: never the prompt, narrative, output, key, or base URL.
+    # Configuration, counts, and offsets only: never the prompt, narrative, output, key, or base
+    # URL.
     logger.info(
         "llm provider=%s model=%s status=%d duration_ms=%.1f output_code_points=%s "
-        "annotations=%s reason=%s upstream_status=%s scope=%s",
+        "annotations=%s reason=%s upstream_status=%s scope=%s alteration=%s first_difference=%s",
         provider,
         model,
         status,
@@ -139,6 +149,8 @@ def _log_llm(
         "-" if reason is None else reason,
         "-" if upstream_status is None else upstream_status,
         scope,
+        "-" if alteration is None else alteration,
+        "-" if first_difference is None else first_difference,
     )
 
 
@@ -158,6 +170,7 @@ def run_llm(
         count: int | None,
         reason: str | None,
         upstream: int | None = None,
+        invalid: OutputInvalid | None = None,
     ) -> None:
         elapsed = time.perf_counter() - started
         _log_llm(
@@ -170,6 +183,8 @@ def run_llm(
             reason,
             upstream,
             scope.name,
+            None if invalid is None else invalid.alteration,
+            None if invalid is None else invalid.first_difference,
         )
 
     try:
@@ -185,8 +200,10 @@ def run_llm(
         log(502, None, None, "LLM_UNAVAILABLE", unavailable.upstream_status)
         return LlmFailure("LLM_UNAVAILABLE", None)
     except OutputInvalid as invalid:
-        log(502, invalid.output_code_points, None, invalid.reason)
-        return LlmFailure("LLM_OUTPUT_INVALID", invalid.reason)
+        log(502, invalid.output_code_points, None, invalid.reason, invalid=invalid)
+        return LlmFailure(
+            "LLM_OUTPUT_INVALID", invalid.reason, invalid.alteration, invalid.first_difference
+        )
     except Exception:
         log(500, None, None, None)
         raise

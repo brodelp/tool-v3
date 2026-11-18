@@ -2,7 +2,7 @@
 
 ## Stage 4 — Annotation sets and LLM annotation (prototype)
 
-Revision 0.2 — 16 November 2026
+Revision 0.3 — 18 November 2026
 
 ### 1. Goal, authority, and scope
 
@@ -203,7 +203,10 @@ proposal. Nothing in the record changes, so no `If-Match` is needed.
 
 A `LLM_OUTPUT_INVALID` failure has one issue with `location` `"llm_output"`, path `""`, and one
 reason code: `OUTPUT_TRUNCATED`, `MODEL_REFUSED`, `UNBALANCED_TAG`, `NESTED_TAG`, `EMPTY_TAG`, or
-`NARRATIVE_ALTERED`. Nothing is stored and nothing from the output is returned.
+`NARRATIVE_ALTERED`. A `NARRATIVE_ALTERED` issue also has `alteration`, the kind of change
+(§5.3), and `first_difference`, the narrative code point offset where the output without its tags
+first differs (the length of their common prefix). Nothing is stored and nothing from the output
+is returned.
 
 Success is `201` with an `LlmProposal`:
 
@@ -514,6 +517,21 @@ The map lives in `config.py`. The output is scanned once, in order:
    points; no trimming, newline conversion, normalization, or fence removal); otherwise
    `NARRATIVE_ALTERED`.
 
+A `NARRATIVE_ALTERED` failure is classified only to report it; the check itself never relaxes.
+The first row that holds is the `alteration`:
+
+| `alteration` | Holds when |
+| --- | --- |
+| `UNKNOWN_TAG` | Removing tag-like text the parser does not recognize (`<ae>`, `<AE >`, `<BR/>`, `<SYMPTOM>`) from both texts makes them equal. |
+| `WRAPPER_TEXT` | The narrative occurs unchanged inside the output (a preamble, code fence, or trailing newline). |
+| `LINE_ENDINGS` | Converting `\r\n` and `\r` to `\n` in both makes them equal. |
+| `WHITESPACE` | Collapsing every whitespace run to one space and trimming both makes them equal. |
+| `ENTITY_ESCAPED` | Unescaping HTML character references (`&amp;`, `&lt;`) in both makes them equal. |
+| `CHARACTERS_NORMALIZED` | NFKC normalization and folding typographic quotes, dashes, and ellipses in both makes them equal. |
+| `TEXT_OMITTED` | The output is the narrative with characters removed. |
+| `TEXT_ADDED` | The output is the narrative with characters inserted. |
+| `TEXT_CHANGED` | None of the above (including a mix of them). |
+
 Each tagged span becomes `{"text","start","end"}` in code points of the narrative, with `text` the
 exact narrative slice. Annotations are grouped by label in canonical order and, within a label, in
 narrative order. Because tags never nest, there are no duplicates.
@@ -542,8 +560,8 @@ internal error (`500`), since the parser cannot produce one.
   `replaces_existing_set` is true, Accept says it replaces the existing set from that model.
   Accept sends §4.4 with the loaded version; on success the editor adopts the new version and
   keeps unsaved user-set changes. `412` offers a reload; failures are explained by their code
-  (§4.3), with a hint for `NARRATIVE_ALTERED` that the model changed the text and a re-run may
-  help.
+  (§4.3), with a hint for `NARRATIVE_ALTERED` that the model changed the text, a sentence naming
+  the kind of change when the issue has a known `alteration`, and that a re-run may help.
 - **Saving** the user set uses §4.2. The stage 3 behaviors (pages, overlap, code points, exact
   round trip of loaded annotation text) apply to every set.
 - **Privacy.** As stage 3 §5: nothing about narratives, annotations, usernames, or proposals is
@@ -552,7 +570,8 @@ internal error (`500`), since the parser cannot produce one.
 ### 7. Logging, privacy, and security
 
 - LLM calls log provider, model, status, duration, output length in code points, annotation
-  count, failure reason codes, and the prompt scope (`full` or `ae`). Never the prompt, narrative, model output, API key, base URL
+  count, failure reason codes, the prompt scope (`full` or `ae`), and, for `NARRATIVE_ALTERED`,
+  `alteration` and `first_difference`. Never the prompt, narrative, model output, API key, base URL
   credentials, upstream response bodies, or exception messages.
 - Annotation jobs (§4.10) log one `llm_job job=<uuid> item=<index> status=<status>
   attempts=<n> reason=<code>` line per item transition. Never `case_id`, `username`, narratives,
@@ -574,7 +593,7 @@ internal error (`500`), since the parser cannot produce one.
 | L03 | Observations: per-set counts and the total; null rules. |
 | L04 | Migration 0003 splices existing records byte for byte, leaves `original_json`, `version`, `updated_at`; downgrade restores the user map; `alembic check` passes. |
 | L05 | User-set update: replace, append to `annotation_sets`, create `annotation_sets`; stage 3 step order; old route removed. |
-| L06 | Parser: tag table, `<` in text, astral characters, CRLF, every reason code, exact narrative equality. |
+| L06 | Parser: tag table, `<` in text, astral characters, CRLF, every reason code, exact narrative equality; every `alteration` kind and `first_difference` in code points, in the issue and the log. |
 | L07 | Providers: request shape, key handling, truncation, timeouts, non-2xx and malformed responses, via a mock transport (no real calls in tests). |
 | L08 | Proposal route: step order and every failure row; success body; proposal stored; nothing logged from the output. |
 | L09 | Accept: step order, splice, validation, version and ETag, proposal deleted; replacement of an existing set; expiry. |
@@ -596,6 +615,13 @@ internal error (`500`), since the parser cannot produce one.
 - Streaming progress; chunking long narratives.
 - Recording prompt versions and sampling parameters in provenance.
 - Data-processing agreements for cloud providers; per-tenant provider choice.
+
+### Revision 0.3 change record
+
+- `NARRATIVE_ALTERED` issues carry `alteration` and `first_difference` (§4.3, §5.3), which are also
+  logged (§7) and named by the frontend hint (§6). They report how the model changed the text so
+  failed runs can be diagnosed without storing or logging any output; the narrative check is
+  unchanged. A failed annotation job item's stored result carries them too.
 
 ### Revision 0.2 change record
 

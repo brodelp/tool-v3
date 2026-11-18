@@ -31,6 +31,8 @@ export class ApiError extends Error {
     readonly code: string | null,
     /** For `LLM_OUTPUT_INVALID`: why the model's output was rejected. */
     readonly reason: string | null = null,
+    /** For `NARRATIVE_ALTERED`: the kind of change the model made to the narrative. */
+    readonly alteration: string | null = null,
   ) {
     super(`API request failed with status ${status}`);
     this.name = "ApiError";
@@ -43,10 +45,13 @@ function query(username: string): string {
 
 async function failure(response: Response): Promise<ApiError> {
   try {
-    const body = (await response.json()) as { error?: { code?: string }; issues?: { code?: string }[] };
+    const body = (await response.json()) as {
+      error?: { code?: string };
+      issues?: { code?: string; alteration?: string }[];
+    };
     const code = body.error?.code ?? null;
-    const reason = code === "LLM_OUTPUT_INVALID" ? (body.issues?.[0]?.code ?? null) : null;
-    return new ApiError(response.status, code, reason);
+    const issue = code === "LLM_OUTPUT_INVALID" ? body.issues?.[0] : undefined;
+    return new ApiError(response.status, code, issue?.code ?? null, issue?.alteration ?? null);
   } catch {
     return new ApiError(response.status, null);
   }
@@ -261,6 +266,30 @@ export async function discardProposal(
   if (!response.ok && response.status !== 404) throw await failure(response);
 }
 
+/** How the model changed the narrative, by the alteration kind of stage 4 §5.3. */
+const ALTERATIONS: Readonly<Record<string, string>> = {
+  UNKNOWN_TAG: "It used tags this service doesn't recognize.",
+  WRAPPER_TEXT: "It added text before or after the narrative.",
+  LINE_ENDINGS: "It changed the line endings.",
+  WHITESPACE: "It changed spaces or line breaks.",
+  ENTITY_ESCAPED: "It escaped characters such as & or <.",
+  CHARACTERS_NORMALIZED: "It replaced quotes, dashes, or accented characters.",
+  TEXT_OMITTED: "It left out part of the narrative.",
+  TEXT_ADDED: "It added text inside the narrative.",
+  TEXT_CHANGED: "It reworded part of the narrative.",
+};
+
+function describeAltered(alteration: string | null): string {
+  const how = alteration !== null && Object.hasOwn(ALTERATIONS, alteration) ? ALTERATIONS[alteration] : null;
+  return [
+    "The model changed the narrative text, so its annotations can't be used.",
+    how,
+    "Running it again may help.",
+  ]
+    .filter((part) => part !== null)
+    .join(" ");
+}
+
 /** What went wrong and what to do, in the interface's voice. */
 export function describeError(error: unknown): string {
   if (!(error instanceof ApiError)) {
@@ -281,7 +310,7 @@ export function describeError(error: unknown): string {
       return "The model service didn't answer. Check the provider settings, then try again.";
     case "LLM_OUTPUT_INVALID":
       return error.reason === "NARRATIVE_ALTERED"
-        ? "The model changed the narrative text, so its annotations can't be used. Running it again may help."
+        ? describeAltered(error.alteration)
         : `The model's annotations were malformed (${error.reason ?? "unknown"}). Running it again may help.`;
     case "NARRATIVE_HAS_MARKUP":
       return "This narrative already contains annotation tags, so it can't be annotated by the model.";

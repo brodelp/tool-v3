@@ -4,6 +4,8 @@ import re
 from typing import Final, Literal
 
 from ..config import LABEL_ORDER, LLM_TAGS
+from ..contracts import Alteration
+from .alteration import classify, first_difference
 
 type OutputReason = Literal[
     "OUTPUT_TRUNCATED",
@@ -18,9 +20,17 @@ _TAG: Final = re.compile(f"<(/?)({'|'.join(LLM_TAGS)})>")
 
 
 class OutputInvalid(Exception):
-    def __init__(self, reason: OutputReason) -> None:
+    def __init__(
+        self,
+        reason: OutputReason,
+        alteration: Alteration | None = None,
+        first_difference: int | None = None,
+    ) -> None:
         super().__init__()
         self.reason: OutputReason = reason
+        # For NARRATIVE_ALTERED only: the kind of change and where it starts, in code points.
+        self.alteration = alteration
+        self.first_difference = first_difference
         # Length of the rejected output, for logging; set by the caller that has the output.
         self.output_code_points: int | None = None
 
@@ -57,6 +67,11 @@ def parse_tagged(output: str, narrative: str) -> dict[str, list[tuple[int, int]]
     if open_tag is not None:
         raise OutputInvalid("UNBALANCED_TAG")
     pieces.append(output[pos:])
-    if "".join(pieces) != narrative:
-        raise OutputInvalid("NARRATIVE_ALTERED")
+    stripped = "".join(pieces)
+    if stripped != narrative:
+        raise OutputInvalid(
+            "NARRATIVE_ALTERED",
+            classify(stripped, narrative),
+            first_difference(stripped, narrative),
+        )
     return dict(sorted(spans.items(), key=lambda kv: LABEL_ORDER[kv[0]]))

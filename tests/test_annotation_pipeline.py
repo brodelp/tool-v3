@@ -1,5 +1,7 @@
 """The annotate-and-store pipeline shared by the route and the job dispatcher (§4.8, §4.10)."""
 
+import json
+
 import pytest
 
 from scat_validator.annotation_pipeline import PipelineFailure, annotate_and_store
@@ -49,6 +51,8 @@ async def test_output_invalid_carries_its_reason(storage: Storage, llm: Install)
     assert isinstance(result, PipelineFailure)
     assert (result.code, result.reason) == ("LLM_OUTPUT_INVALID", "NARRATIVE_ALTERED")
     assert result.outcome.status == 502
+    (issue,) = json.loads(result.outcome.body)["issues"]
+    assert (issue["alteration"], issue["first_difference"]) == ("TEXT_CHANGED", 21)
     assert storage.fetch(CASE, USER) is None
 
 

@@ -62,3 +62,52 @@ def test_contains_markup() -> None:
     assert contains_markup("</SEX>")
     assert not contains_markup("<ae>")
     assert not contains_markup("<AEX>")
+
+
+@pytest.mark.parametrize(
+    ("output", "narrative", "alteration", "first_difference"),
+    [
+        ("<SYMPTOM>rash</SYMPTOM> x", "rash x", "UNKNOWN_TAG", 0),
+        ("a <ae>rash</ae>", "a rash", "UNKNOWN_TAG", 2),
+        ("a <AE >rash</AE >", "a rash", "UNKNOWN_TAG", 2),
+        ("a <b> <BR/>c", "a <b> c", "UNKNOWN_TAG", 6),
+        ("Here it is:\na <AE>b</AE>", "a b", "WRAPPER_TEXT", 0),
+        ("```\na <AE>b</AE>\n```", "a b", "WRAPPER_TEXT", 0),
+        ("a <AE>b</AE>\n", "a b", "WRAPPER_TEXT", 3),
+        ("a\n<AE>b</AE>", "a\r\nb", "LINE_ENDINGS", 1),
+        ("a <AE>b</AE>", "a  b", "WHITESPACE", 2),
+        ("a\n<AE>b</AE>", "a\n\nb", "WHITESPACE", 2),
+        ("x a <AE>b</AE>", "x a b ", "WHITESPACE", 5),
+        ("A &amp; <AE>B</AE>", "A & B", "ENTITY_ESCAPED", 3),
+        ("dose &lt;5 <AE>rash</AE>", "dose <5 rash", "ENTITY_ESCAPED", 5),
+        ("a - <AE>b</AE>", "a \u2014 b", "CHARACTERS_NORMALIZED", 2),
+        ("\u201cx\u201d <AE>b</AE>", '"x" b', "CHARACTERS_NORMALIZED", 0),
+        ("Cafe\u0301 <AE>b</AE>", "Caf\u00e9 b", "CHARACTERS_NORMALIZED", 3),
+        ("a\u00a0<AE>b</AE>", "a b", "WHITESPACE", 1),
+        ("<AE>rash</AE>.", "rash. Then more.", "TEXT_OMITTED", 5),
+        ("a **<AE>b</AE>**", "a b", "TEXT_ADDED", 2),
+        ("Patient <AE>rash</AE>", "Pt rash", "TEXT_ADDED", 1),
+        ("the <AE>rash</AE>", "a rash", "TEXT_CHANGED", 0),
+        ("a  <AE>b</AE> &amp;", "a b & c", "TEXT_CHANGED", 2),
+    ],
+)
+def test_altered_narrative_is_classified(
+    output: str, narrative: str, alteration: str, first_difference: int
+) -> None:
+    with pytest.raises(OutputInvalid) as e:
+        parse_tagged(output, narrative)
+    assert e.value.reason == "NARRATIVE_ALTERED"
+    assert (e.value.alteration, e.value.first_difference) == (alteration, first_difference)
+
+
+def test_first_difference_counts_code_points() -> None:
+    with pytest.raises(OutputInvalid) as e:
+        parse_tagged("😀 <AE>rash</AE> y", "😀 rash x")
+    assert e.value.first_difference == 7
+
+
+@pytest.mark.parametrize("output", ["<AE>x", "<AE></AE>x", "<AE>x<DX>y</DX></AE>"])
+def test_other_reasons_carry_no_alteration(output: str) -> None:
+    with pytest.raises(OutputInvalid) as e:
+        parse_tagged(output, "xy")
+    assert (e.value.alteration, e.value.first_difference) == (None, None)

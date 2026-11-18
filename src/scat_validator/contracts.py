@@ -387,6 +387,19 @@ type ErrorCode = Literal[
 ]
 
 
+type Alteration = Literal[
+    "UNKNOWN_TAG",
+    "WRAPPER_TEXT",
+    "LINE_ENDINGS",
+    "WHITESPACE",
+    "ENTITY_ESCAPED",
+    "CHARACTERS_NORMALIZED",
+    "TEXT_OMITTED",
+    "TEXT_ADDED",
+    "TEXT_CHANGED",
+]
+
+
 class Issue(TypedDict):
     """One diagnostic. Messages are fixed and never contain submitted values."""
 
@@ -408,6 +421,29 @@ class Issue(TypedDict):
         Annotated[
             Literal[True],
             Field(description="Present only when the exact path exceeded the byte limit."),
+        ]
+    ]
+    alteration: NotRequired[
+        Annotated[
+            Alteration,
+            Field(
+                description=(
+                    "Present only on `NARRATIVE_ALTERED`: the kind of change the model made to "
+                    "the narrative text."
+                )
+            ),
+        ]
+    ]
+    first_difference: NotRequired[
+        Annotated[
+            int,
+            Field(
+                ge=0,
+                description=(
+                    "Present only on `NARRATIVE_ALTERED`: the narrative code point offset where "
+                    "the output without its tags first differs."
+                ),
+            ),
         ]
     ]
 

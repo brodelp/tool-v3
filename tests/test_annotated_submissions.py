@@ -165,6 +165,8 @@ def test_steps_in_order(storage: Storage, llm: Install, monkeypatch: pytest.Monk
     altered = submit_annotated(other)
     assert failure(altered) == (502, "LLM_OUTPUT_INVALID")
     assert issue_triples(altered) == [("llm_output", "", "NARRATIVE_ALTERED")]
+    issue = altered.json()["issues"][0]
+    assert (issue["alteration"], issue["first_difference"]) == ("TEXT_CHANGED", 21)
     assert b"nausea" not in altered.body
     assert stored_row(storage, "6001-1") is None
 
@@ -232,3 +234,4 @@ def test_logs_contain_no_values(
     assert "scope=full" in caplog.text
     assert f"POST {ROUTE} status=201" in caplog.text
     assert "reason=NARRATIVE_ALTERED" in caplog.text
+    assert "alteration=TEXT_CHANGED first_difference=6" in caplog.text
