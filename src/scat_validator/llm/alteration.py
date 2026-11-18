@@ -15,7 +15,7 @@ from ..contracts import Alteration
 _TAG_LIKE: Final = re.compile(r"</?\s*[A-Za-z][\w-]*\s*/?>")
 _WHITESPACE: Final = re.compile(r"\s+")
 # Typographic characters models commonly swap for one another, folded to one form.
-_FOLD: Final = str.maketrans(
+FOLD: Final = str.maketrans(
     {
         0x2018: "'",  # left and right single quotes
         0x2019: "'",
@@ -37,7 +37,7 @@ def _whitespace(text: str) -> str:
 
 
 def _characters(text: str) -> str:
-    return unicodedata.normalize("NFKC", text).translate(_FOLD)
+    return unicodedata.normalize("NFKC", text).translate(FOLD)
 
 
 # Each kind holds when one normalization, applied to both texts, makes them equal. First wins.
