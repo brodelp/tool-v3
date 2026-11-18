@@ -9,7 +9,7 @@ import unicodedata
 from collections.abc import Callable
 from typing import Final
 
-from ..contracts import Alteration
+from ..contracts import Alteration, Normalization, Repair
 
 # Tag-like markup the parser does not recognize: wrong case, inner spaces, self-closing, invented.
 _TAG_LIKE: Final = re.compile(r"</?\s*[A-Za-z][\w-]*\s*/?>")
@@ -51,7 +51,7 @@ def _visible(text: str) -> str:
 
 
 # Each kind holds when one normalization, applied to both texts, makes them equal. First wins.
-_NORMALIZED: Final[tuple[tuple[Alteration, Callable[[str], str]], ...]] = (
+_NORMALIZED: Final[tuple[tuple[Normalization, Callable[[str], str]], ...]] = (
     ("LINE_ENDINGS", _line_endings),
     ("WHITESPACE", _whitespace),
     ("ENTITY_ESCAPED", html.unescape),
@@ -88,3 +88,11 @@ def classify(stripped: str, narrative: str) -> Alteration:
     if _is_subsequence(narrative, stripped):
         return "TEXT_ADDED"
     return "TEXT_CHANGED"
+
+
+def repair_kind(stripped: str, narrative: str) -> Repair:
+    """The kind of a change the repair undid: one normalization, or ``MULTIPLE``."""
+    for kind, normalize in _NORMALIZED:
+        if normalize(stripped) == normalize(narrative):
+            return kind
+    return "MULTIPLE"

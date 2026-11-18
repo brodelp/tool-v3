@@ -24,7 +24,7 @@ from scat_validator.config import (
     LLM_MAX_CONCURRENT_RUNS,
     MAX_LLM_NARRATIVE_CODE_POINTS,
 )
-from scat_validator.contracts import Alteration, ErrorCode, ValidationReport
+from scat_validator.contracts import Alteration, ErrorCode, Repair, ValidationReport
 from scat_validator.diagnostics import IssueCollector, Msg
 from scat_validator.llm.annotate import ProposedSet, annotate
 from scat_validator.llm.prompt import FULL_SCOPE, PromptScope
@@ -134,7 +134,7 @@ def _log_llm(
     scope: str,
     alteration: Alteration | None,
     first_difference: int | None,
-    repaired: Alteration | None,
+    repaired: Repair | None,
 ) -> None:
     # Configuration, counts, and offsets only: never the prompt, narrative, output, key, or base
     # URL.
@@ -174,7 +174,7 @@ def run_llm(
         reason: str | None,
         upstream: int | None = None,
         invalid: OutputInvalid | None = None,
-        repaired: Alteration | None = None,
+        repaired: Repair | None = None,
     ) -> None:
         elapsed = time.perf_counter() - started
         _log_llm(

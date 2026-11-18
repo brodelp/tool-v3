@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import httpx
 
-from ..contracts import Alteration
+from ..contracts import Repair
 from ..diagnostics import InventoryCollector, IssueCollector
 from ..paths import PathNode
 from ..validation import validate_record
@@ -25,7 +25,7 @@ class ProposedSet:
     annotation_count: int
     annotations_by_label: dict[str, int]
     output_code_points: int
-    repaired: Alteration | None  # the kind of change the normalization rules undid
+    repaired: Repair | None  # the kind of change the normalization rules undid
 
 
 def _dumps(value: object) -> str:

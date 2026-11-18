@@ -412,8 +412,11 @@ Choices the stage 4 spec and design leave open:
   would fail the §5.4 self-check). Wrapper text, unknown tags, and whitespace deleted between
   tokens (`10 mg` to `10mg`) are not repaired: each changes what the text says or how it
   splits into words. The kind is recorded as the foreign set property `output_repair`, like
-  `label_scope`, so it survives accept, storage, and export and an annotator can see it; the
-  log carries it as `repaired=`. `INVISIBLE_CHARACTERS` was added so that a run whose only
+  `label_scope`, so it survives accept, storage, and export (the frontend does not display it
+  yet); the log carries it as `repaired=`. The kind is not the failure classifier's answer, which
+  would call a trailing newline `WRAPPER_TEXT` and a mix of rules `TEXT_CHANGED`: it is the first
+  single normalization that explains the change, or `MULTIPLE`, a value only a repair can have
+  (type `Repair` in `contracts.py`, kept out of the issue's `alteration`). `INVISIBLE_CHARACTERS` was added so that a run whose only
   change was dropped invisible characters is not reported as `TEXT_OMITTED`.
 
 ### Annotation jobs

@@ -526,7 +526,10 @@ The map lives in `config.py`. The output is scanned once, in order:
    empty, there is no repair. Without a repair the failure is `NARRATIVE_ALTERED`. Fence and
    preamble removal, unknown tags, and changed visible text are never repaired.
 
-A repaired output's `alteration` (below) is recorded in its set (§5.4) and logged (§7). For a
+A repaired output's kind is recorded in its set (§5.4) and logged (§7). The kind is the first of
+`LINE_ENDINGS`, `WHITESPACE`, `ENTITY_ESCAPED`, `CHARACTERS_NORMALIZED`, and
+`INVISIBLE_CHARACTERS` (below) whose single rule makes the texts equal, or `MULTIPLE` when only
+their combination does. A trailing newline is therefore `WHITESPACE`, not `WRAPPER_TEXT`. For a
 `NARRATIVE_ALTERED` failure, the classification is only reported. The first row that holds is the
 `alteration`:
 
@@ -552,7 +555,7 @@ narrative order. Because tags never nest, there are no duplicates.
 The proposal's set object is serialized by the service as
 `{"kind":"llm","provider":…,"model":…,"generated_at":…,"annotations":{…}}`, with
 `generated_at` the time the provider responded. A repaired output (§5.3) adds the foreign
-property `"output_repair": <alteration>` before `annotations`, after `label_scope` when present.
+property `"output_repair": <kind>` before `annotations`, after `label_scope` when present.
 It must pass the §2 rules; a failure is an
 internal error (`500`), since the parser cannot produce one.
 
@@ -584,7 +587,7 @@ internal error (`500`), since the parser cannot produce one.
 
 - LLM calls log provider, model, status, duration, output length in code points, annotation
   count, failure reason codes, the prompt scope (`full` or `ae`), and, for `NARRATIVE_ALTERED`,
-  `alteration` and `first_difference`, and, for a repaired output, `repaired` (its alteration).
+  `alteration` and `first_difference`, and, for a repaired output, `repaired` (its kind).
   Never the prompt, narrative, model output, API key, base URL
   credentials, upstream response bodies, or exception messages.
 - Annotation jobs (§4.10) log one `llm_job job=<uuid> item=<index> status=<status>
@@ -639,7 +642,7 @@ internal error (`500`), since the parser cannot produce one.
   repair as `output_repair` (§5.4), and the log line carries `repaired` (§7). A batch run failed 15 of
   54 narratives with nearly the same whitespace and omitted-text split under two different
   models, which points at the narratives rather than the models.
-- Added the `INVISIBLE_CHARACTERS` alteration kind.
+- Added the `INVISIBLE_CHARACTERS` alteration kind and the repair kind `MULTIPLE`.
 
 ### Revision 0.3 change record
 

@@ -39,7 +39,7 @@ def test_crlf_normalized_output_is_repaired() -> None:
 
 
 def test_trailing_newline_is_repaired() -> None:
-    assert parse_tagged("<AE>x</AE>\n", "x") == ParsedOutput({"AE": [(0, 1)]}, "WRAPPER_TEXT")
+    assert parse_tagged("<AE>x</AE>\n", "x") == ParsedOutput({"AE": [(0, 1)]}, "WHITESPACE")
 
 
 @pytest.mark.parametrize(
@@ -47,6 +47,10 @@ def test_trailing_newline_is_repaired() -> None:
     [
         ("a\u00a0<AE>b</AE>", "a b", "WHITESPACE"),
         ("A &amp; <AE>B</AE>", "A & B", "ENTITY_ESCAPED"),
+        ("Patient had <AE>fever</AE> and rash.\n", "Patient had fever and rash.", "WHITESPACE"),
+        ("Patient had <AE>fever</AE>\u200b", "Patient had fever", "INVISIBLE_CHARACTERS"),
+        ("a <AE>rash</AE>", "a\u00a0ra\u200bsh", "MULTIPLE"),
+        ("<MAE>a</MAE>&#x200B;b", "ab", "MULTIPLE"),
     ],
 )
 def test_repaired_reports_its_kind(output: str, narrative: str, repaired: str) -> None:

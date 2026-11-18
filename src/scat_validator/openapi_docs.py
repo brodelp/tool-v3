@@ -886,7 +886,8 @@ connection failure, non-2xx, or malformed response (502 `LLM_UNAVAILABLE`); unus
 Nothing from the output is returned on failure. Output that differs from the narrative only in
 line endings, whitespace, character references, typographic characters, or invisible characters
 is repaired: its spans are mapped onto the narrative and the set records the kind of change as
-the foreign property `output_repair` (an `alteration` value). {_EMPTY_BODY_NOTE}
+the foreign property `output_repair`: `LINE_ENDINGS`, `WHITESPACE`, `ENTITY_ESCAPED`,
+`CHARACTERS_NORMALIZED`, `INVISIBLE_CHARACTERS`, or `MULTIPLE`. {_EMPTY_BODY_NOTE}
 {_LOOKUP_DESCRIPTION}"""
 
 _ACCEPT_DESCRIPTION: Final = f"""

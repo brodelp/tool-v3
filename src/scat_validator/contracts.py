@@ -400,6 +400,18 @@ type Alteration = Literal[
     "TEXT_CHANGED",
 ]
 
+# The alterations a repair undoes (stage 4 §5.3).
+type Normalization = Literal[
+    "LINE_ENDINGS",
+    "WHITESPACE",
+    "ENTITY_ESCAPED",
+    "CHARACTERS_NORMALIZED",
+    "INVISIBLE_CHARACTERS",
+]
+# A repaired output's kind: the first normalization whose single rule undoes the change, or
+# MULTIPLE when only their combination does.
+type Repair = Normalization | Literal["MULTIPLE"]
+
 
 class Issue(TypedDict):
     """One diagnostic. Messages are fixed and never contain submitted values."""

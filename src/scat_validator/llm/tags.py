@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 from ..config import LABEL_ORDER, LLM_TAGS
-from ..contracts import Alteration
-from .alteration import classify, first_difference
+from ..contracts import Alteration, Repair
+from .alteration import classify, first_difference, repair_kind
 from .repair import repair_spans
 
 type OutputReason = Literal[
@@ -41,7 +41,7 @@ class OutputInvalid(Exception):
 class ParsedOutput:
     spans: dict[str, list[tuple[int, int]]]  # narrative code points, canonical label order
     # The kind of change the normalization rules undid, or None for an exact output.
-    repaired: Alteration | None
+    repaired: Repair | None
 
 
 def contains_markup(narrative: str) -> bool:
@@ -77,7 +77,7 @@ def parse_tagged(output: str, narrative: str) -> ParsedOutput:
         raise OutputInvalid("UNBALANCED_TAG")
     pieces.append(output[pos:])
     stripped = "".join(pieces)
-    repaired: Alteration | None = None
+    repaired: Repair | None = None
     if stripped != narrative:
         mapped = repair_spans(stripped, narrative, spans)
         if mapped is None:
@@ -86,5 +86,5 @@ def parse_tagged(output: str, narrative: str) -> ParsedOutput:
                 classify(stripped, narrative),
                 first_difference(stripped, narrative),
             )
-        spans, repaired = mapped, classify(stripped, narrative)
+        spans, repaired = mapped, repair_kind(stripped, narrative)
     return ParsedOutput(dict(sorted(spans.items(), key=lambda kv: LABEL_ORDER[kv[0]])), repaired)
