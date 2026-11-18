@@ -43,7 +43,7 @@ def annotate(
             raise OutputInvalid("OUTPUT_TRUNCATED")
         if completion.stop == "refused":
             raise OutputInvalid("MODEL_REFUSED")
-        spans = parse_tagged(completion.text, narrative)
+        spans = parse_tagged(completion.text, narrative).spans
     except OutputInvalid as invalid:
         invalid.output_code_points = len(completion.text)
         raise
