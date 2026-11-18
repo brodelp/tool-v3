@@ -13,16 +13,11 @@ import unicodedata
 from bisect import bisect_left, bisect_right
 from typing import Final
 
-from .alteration import FOLD
+from .alteration import FOLD, is_invisible
 
 _REFERENCE: Final = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);")
 
 type Spans = dict[str, list[tuple[int, int]]]
-
-
-def _ignored(ch: str) -> bool:
-    category = unicodedata.category(ch)
-    return category == "Cf" or (category == "Cc" and not ch.isspace())
 
 
 def _canonical(text: str) -> tuple[str, list[int], list[int]]:
@@ -38,7 +33,7 @@ def _canonical(text: str) -> tuple[str, list[int], list[int]]:
         if m and html.unescape(m.group()) != m.group():
             units, source = html.unescape(m.group()), m.span()
         for unit in units:
-            if _ignored(unit):
+            if is_invisible(unit):
                 continue
             for ch in unicodedata.normalize("NFKD", unit).translate(FOLD):
                 if ch.isspace():

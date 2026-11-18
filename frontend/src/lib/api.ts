@@ -274,6 +274,7 @@ const ALTERATIONS: Readonly<Record<string, string>> = {
   WHITESPACE: "It changed spaces or line breaks.",
   ENTITY_ESCAPED: "It escaped characters such as & or <.",
   CHARACTERS_NORMALIZED: "It replaced quotes, dashes, or accented characters.",
+  INVISIBLE_CHARACTERS: "It dropped invisible characters such as zero-width spaces.",
   TEXT_OMITTED: "It left out part of the narrative.",
   TEXT_ADDED: "It added text inside the narrative.",
   TEXT_CHANGED: "It reworded part of the narrative.",

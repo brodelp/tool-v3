@@ -137,6 +137,8 @@ def test_other_reasons_carry_no_alteration(output: str) -> None:
         ("a - b", "a \u2014 b", "CHARACTERS_NORMALIZED"),
         ("\u201cx\u201d b", '"x" b', "CHARACTERS_NORMALIZED"),
         ("Cafe\u0301 b", "Caf\u00e9 b", "CHARACTERS_NORMALIZED"),
+        ("a rash", "a ra\u200bsh", "INVISIBLE_CHARACTERS"),
+        ("hepatotoxicity", "hepato\u00adtoxicity", "INVISIBLE_CHARACTERS"),
     ],
 )
 def test_classify(stripped: str, narrative: str, alteration: str) -> None:

@@ -40,12 +40,23 @@ def _characters(text: str) -> str:
     return unicodedata.normalize("NFKC", text).translate(FOLD)
 
 
+def is_invisible(ch: str) -> bool:
+    """A format or non-whitespace control character, such as a zero-width space."""
+    category = unicodedata.category(ch)
+    return category == "Cf" or (category == "Cc" and not ch.isspace())
+
+
+def _visible(text: str) -> str:
+    return "".join(ch for ch in text if not is_invisible(ch))
+
+
 # Each kind holds when one normalization, applied to both texts, makes them equal. First wins.
 _NORMALIZED: Final[tuple[tuple[Alteration, Callable[[str], str]], ...]] = (
     ("LINE_ENDINGS", _line_endings),
     ("WHITESPACE", _whitespace),
     ("ENTITY_ESCAPED", html.unescape),
     ("CHARACTERS_NORMALIZED", _characters),
+    ("INVISIBLE_CHARACTERS", _visible),
 )
 
 

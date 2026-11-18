@@ -394,6 +394,7 @@ type Alteration = Literal[
     "WHITESPACE",
     "ENTITY_ESCAPED",
     "CHARACTERS_NORMALIZED",
+    "INVISIBLE_CHARACTERS",
     "TEXT_OMITTED",
     "TEXT_ADDED",
     "TEXT_CHANGED",
