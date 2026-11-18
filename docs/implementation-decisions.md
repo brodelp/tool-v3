@@ -398,6 +398,23 @@ Choices the stage 4 spec and design leave open:
   "Patient" is `TEXT_ADDED`. The fields extend `Issue` as optional members, like
   `path_truncated`, so the fixed message and the reason code stay as they were. The kind type is
   in `contracts.py` with the other wire literals.
+- **Repairing normalization-only output (§5.3, revision 0.4).** A batch of 54 narratives failed
+  15 times under two different models, almost all `WHITESPACE` or `TEXT_OMITTED`. Models don't
+  reproduce no-break spaces, zero-width spaces, soft hyphens, or stray whitespace reliably, so
+  `llm/repair.py` maps tag offsets across those changes instead of rejecting the run. Annotation
+  `text` is still sliced from the stored narrative, so nothing stored changes byte-wise; only the
+  offsets move. All the rules apply together (one canonicalization), so a mix such as a no-break
+  space plus a dropped zero-width space is repaired too. Characters are NFKD-decomposed one at a
+  time, not NFKC-composed, so a composed letter and its decomposed form line up character for
+  character with source ranges. A boundary inside a whitespace run snaps toward the span's
+  inside, so a tag never gains surrounding whitespace from the repair. Boundaries that would
+  split a narrative character, and spans that would become empty, are not repaired (the set
+  would fail the §5.4 self-check). Wrapper text, unknown tags, and whitespace deleted between
+  tokens (`10 mg` to `10mg`) are not repaired: each changes what the text says or how it
+  splits into words. The kind is recorded as the foreign set property `output_repair`, like
+  `label_scope`, so it survives accept, storage, and export and an annotator can see it; the
+  log carries it as `repaired=`. `INVISIBLE_CHARACTERS` was added so that a run whose only
+  change was dropped invisible characters is not reported as `TEXT_OMITTED`.
 
 ### Annotation jobs
 

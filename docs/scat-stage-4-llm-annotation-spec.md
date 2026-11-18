@@ -2,7 +2,7 @@
 
 ## Stage 4 — Annotation sets and LLM annotation (prototype)
 
-Revision 0.3 — 18 November 2026
+Revision 0.4 — 18 November 2026
 
 ### 1. Goal, authority, and scope
 
@@ -513,12 +513,22 @@ The map lives in `config.py`. The output is scanned once, in order:
 2. A closing tag that does not close the open tag, or an open tag at the end, is
    `UNBALANCED_TAG`.
 3. A closing tag immediately after its opening tag is `EMPTY_TAG`.
-4. The output with all markup removed must equal the stored narrative **exactly** (same code
-   points; no trimming, newline conversion, normalization, or fence removal); otherwise
-   `NARRATIVE_ALTERED`.
+4. The output with all markup removed is compared with the stored narrative. When the two are
+   equal (same code points), the spans are used as they are. Otherwise the output is
+   **repaired** when both texts are equal after this canonicalization: format characters
+   (category `Cf`, such as U+200B and U+00AD) and non-whitespace control characters are
+   dropped; every whitespace run becomes one space, and leading and trailing runs are removed;
+   HTML character references (`&amp;`, `&#160;`) are unescaped; every other character is NFKD
+   decomposed and the typographic quotes, dashes, and ellipsis are folded. Each tag boundary then
+   maps through the canonical text to a narrative offset, and a boundary inside a whitespace run
+   moves to the span's inside. If a boundary would fall inside one narrative character (a
+   ligature, or a precomposed letter whose parts were tagged separately), or a span would become
+   empty, there is no repair. Without a repair the failure is `NARRATIVE_ALTERED`. Fence and
+   preamble removal, unknown tags, and changed visible text are never repaired.
 
-A `NARRATIVE_ALTERED` failure is classified only to report it; the check itself never relaxes.
-The first row that holds is the `alteration`:
+A repaired output's `alteration` (below) is recorded in its set (§5.4) and logged (§7). For a
+`NARRATIVE_ALTERED` failure, the classification is only reported. The first row that holds is the
+`alteration`:
 
 | `alteration` | Holds when |
 | --- | --- |
@@ -528,6 +538,7 @@ The first row that holds is the `alteration`:
 | `WHITESPACE` | Collapsing every whitespace run to one space and trimming both makes them equal. |
 | `ENTITY_ESCAPED` | Unescaping HTML character references (`&amp;`, `&lt;`) in both makes them equal. |
 | `CHARACTERS_NORMALIZED` | NFKC normalization and folding typographic quotes, dashes, and ellipses in both makes them equal. |
+| `INVISIBLE_CHARACTERS` | Removing format (`Cf`) and non-whitespace control characters from both makes them equal. |
 | `TEXT_OMITTED` | The output is the narrative with characters removed. |
 | `TEXT_ADDED` | The output is the narrative with characters inserted. |
 | `TEXT_CHANGED` | None of the above (including a mix of them). |
@@ -540,7 +551,9 @@ narrative order. Because tags never nest, there are no duplicates.
 
 The proposal's set object is serialized by the service as
 `{"kind":"llm","provider":…,"model":…,"generated_at":…,"annotations":{…}}`, with
-`generated_at` the time the provider responded. It must pass the §2 rules; a failure is an
+`generated_at` the time the provider responded. A repaired output (§5.3) adds the foreign
+property `"output_repair": <alteration>` before `annotations`, after `label_scope` when present.
+It must pass the §2 rules; a failure is an
 internal error (`500`), since the parser cannot produce one.
 
 ### 6. Frontend
@@ -571,7 +584,8 @@ internal error (`500`), since the parser cannot produce one.
 
 - LLM calls log provider, model, status, duration, output length in code points, annotation
   count, failure reason codes, the prompt scope (`full` or `ae`), and, for `NARRATIVE_ALTERED`,
-  `alteration` and `first_difference`. Never the prompt, narrative, model output, API key, base URL
+  `alteration` and `first_difference`, and, for a repaired output, `repaired` (its alteration).
+  Never the prompt, narrative, model output, API key, base URL
   credentials, upstream response bodies, or exception messages.
 - Annotation jobs (§4.10) log one `llm_job job=<uuid> item=<index> status=<status>
   attempts=<n> reason=<code>` line per item transition. Never `case_id`, `username`, narratives,
@@ -615,6 +629,17 @@ internal error (`500`), since the parser cannot produce one.
 - Streaming progress; chunking long narratives.
 - Recording prompt versions and sampling parameters in provenance.
 - Data-processing agreements for cloud providers; per-tenant provider choice.
+
+### Revision 0.4 change record
+
+- Output that differs from the narrative only by changes the §5.3 canonicalization undoes (line
+  endings, whitespace, character references, typographic and compatibility characters, dropped
+  invisible characters) is repaired rather than rejected: tag boundaries are mapped onto the
+  narrative, and annotation text is still sliced from the stored narrative. The set records the
+  repair as `output_repair` (§5.4), and the log line carries `repaired` (§7). A batch run failed 15 of
+  54 narratives with nearly the same whitespace and omitted-text split under two different
+  models, which points at the narratives rather than the models.
+- Added the `INVISIBLE_CHARACTERS` alteration kind.
 
 ### Revision 0.3 change record
 
